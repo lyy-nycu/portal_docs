@@ -30,12 +30,12 @@ info:
     url: https://opensource.org/licenses/MIT
 
 servers:
-  - url: https://portal.nycu.edu.tw/api
-    description: 生產環境
-  - url: https://portal-dev.nycu.edu.tw/api
-    description: 開發環境
-  - url: http://localhost:8000/api
-    description: 本地開發環境
+  - url: https://portal.nycu.edu.tw/portal
+    description: Prod
+  - url: https://portal.test.nycu.edu.tw/portal
+    description: Dev
+  - url: http://localhost:8000/portal
+    description: Local Dev
 
 security:
   - BearerAuth: []
