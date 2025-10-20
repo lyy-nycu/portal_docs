@@ -485,7 +485,7 @@ paths:
                     name: "王小明"
                     dept: "資訊工程學系"
                     mail: "student@nycu.edu.tw"
-                    idStatus: "1"
+                    idStatus: "在學"
                     ou: "student"
                     2fa: "disable"
                     token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
