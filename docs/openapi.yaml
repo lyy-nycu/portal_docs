@@ -1,0 +1,941 @@
+openapi: 3.0.3
+info:
+  title: Portal Backend API
+  description: |
+    陽明交通大學單一入口系統後端 API
+    
+    ## 功能概述
+    - 用戶認證與授權
+    - TOTP 雙因素認證
+    - 郵件服務管理
+    - 用戶資訊查詢
+    - 系統管理功能
+    
+    ## 認證方式
+    - LDAP 認證
+    - JWT Token
+    - TOTP 雙因素認證
+    
+    ## 安全功能
+    - 速率限制
+    - reCAPTCHA 驗證
+    - IP 白名單檢查
+    - 帳戶鎖定機制
+  version: 1.0.0
+  contact:
+    name: Portal Development Team
+    email: portal-dev@nycu.edu.tw
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://portal.nycu.edu.tw/api
+    description: 生產環境
+  - url: https://portal-dev.nycu.edu.tw/api
+    description: 開發環境
+  - url: http://localhost:8000/api
+    description: 本地開發環境
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+paths:
+  /sendTOTP:
+    post:
+      tags:
+        - TOTP 認證
+      summary: 發送 TOTP 驗證碼
+      description: |
+        發送 TOTP 驗證碼到指定郵箱
+        
+        ## 限制條件
+        - 最多重送 3 次，超過後鎖定 15 分鐘
+        - 每次重送間隔 10 秒冷卻期
+        - 需要 reCAPTCHA 驗證
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - email
+                - token
+                - recaptchaToken
+              properties:
+                email:
+                  type: string
+                  format: email
+                  description: 用戶郵箱地址
+                  example: "user@nycu.edu.tw"
+                token:
+                  type: string
+                  description: 臨時 token
+                  example: "abc123def456"
+                recaptchaToken:
+                  type: string
+                  description: reCAPTCHA 驗證 token
+                  example: "03AFcWeA..."
+      responses:
+        '200':
+          description: 成功發送 TOTP
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "TOTP has been sent"
+                  sent_time:
+                    type: integer
+                    description: 發送時間戳
+                    example: 1748703433
+                  retry_after:
+                    type: integer
+                    description: 下次可重送剩餘秒數
+                    example: 60
+                  resend_count:
+                    type: integer
+                    description: 當前重送次數
+                    example: 1
+                  max_resend_attempts:
+                    type: integer
+                    description: 最大重送次數
+                    example: 3
+                  token:
+                    type: string
+                    description: 新的臨時 token
+                    example: "new_token_123"
+        '400':
+          description: 無效請求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 無效或過期的 token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 重送次數過多，帳戶被鎖定
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: boolean
+                    example: false
+                  message:
+                    type: string
+                    example: "Too many resend attempts, please try again later"
+                  lockout_seconds:
+                    type: integer
+                    description: 鎖定剩餘秒數
+                    example: 720
+                  resend_count:
+                    type: integer
+                    example: 3
+                  max_resend_attempts:
+                    type: integer
+                    example: 3
+        '422':
+          description: 輸入驗證失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: 請求過於頻繁
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 伺服器錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /verifyTOTP:
+    post:
+      tags:
+        - TOTP 認證
+      summary: 驗證 TOTP 代碼
+      description: |
+        驗證用戶輸入的 TOTP 代碼
+        
+        ## 限制條件
+        - 最多錯誤 3 次，超過後鎖定 15 分鐘
+        - 需要 reCAPTCHA 驗證
+        - TOTP 代碼有效期 5 分鐘
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - email
+                - totp_code
+                - token
+                - recaptchaToken
+              properties:
+                email:
+                  type: string
+                  format: email
+                  description: 用戶郵箱地址
+                  example: "user@nycu.edu.tw"
+                totp_code:
+                  type: string
+                  description: 6 位數 TOTP 驗證碼
+                  pattern: '^[0-9]{6}$'
+                  example: "123456"
+                token:
+                  type: string
+                  description: 臨時 token
+                  example: "abc123def456"
+                recaptchaToken:
+                  type: string
+                  description: reCAPTCHA 驗證 token
+                  example: "03AFcWeA..."
+      responses:
+        '200':
+          description: 驗證成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "verify success"
+                  token:
+                    type: string
+                    description: 驗證成功後的 token
+                    example: "verified_token_123"
+        '400':
+          description: 無效請求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 驗證失敗
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: boolean
+                    example: false
+                  message:
+                    type: string
+                    example: "totp verify failed"
+                  fail_count:
+                    type: integer
+                    description: 當前失敗次數
+                    example: 2
+                  token:
+                    type: string
+                    description: 新的臨時 token
+                    example: "new_token_123"
+                  max_attempts:
+                    type: integer
+                    description: 最大嘗試次數
+                    example: 3
+        '403':
+          description: 帳戶被鎖定
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: boolean
+                    example: false
+                  message:
+                    type: string
+                    example: "Too many requests, please try again later"
+                  lockout_seconds:
+                    type: integer
+                    description: 鎖定剩餘秒數
+                    example: 720
+        '422':
+          description: 輸入驗證失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: 請求過於頻繁
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 伺服器錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /resetPassword:
+    post:
+      tags:
+        - 密碼管理
+      summary: 重設密碼
+      description: |
+        使用 TOTP 驗證後重設用戶密碼
+        
+        ## 密碼要求
+        - 長度至少 8 位
+        - 包含大小寫字母、數字和特殊字符
+        - 不能與舊密碼相同
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - email
+                - newPassword
+                - token
+                - recaptchaToken
+              properties:
+                email:
+                  type: string
+                  format: email
+                  description: 用戶郵箱地址
+                  example: "user@nycu.edu.tw"
+                newPassword:
+                  type: string
+                  description: 新密碼
+                  minLength: 8
+                  example: "NewP@ssw0rd123"
+                token:
+                  type: string
+                  description: 重設密碼 token
+                  example: "reset_token_123"
+                recaptchaToken:
+                  type: string
+                  description: reCAPTCHA 驗證 token
+                  example: "03AFcWeA..."
+      responses:
+        '200':
+          description: 密碼重設成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Password reset successfully"
+        '400':
+          description: 無效請求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 無效或過期的 token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: 密碼不符合要求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: 請求過於頻繁
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 伺服器錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /PortalLdapLogin:
+    post:
+      tags:
+        - 用戶認證
+      summary: Portal LDAP 登入
+      description: |
+        使用 LDAP 進行 Portal 單一登入系統認證
+
+        ## 認證流程
+        1. **reCAPTCHA 驗證** - 防止機器人攻擊
+        2. **LDAP 身份驗證** - 使用 `ldap_bind_ext` 進行密碼驗證
+        3. **密碼策略檢查** - 檢查密碼過期、錯誤次數過多等狀態
+        4. **帳戶狀態檢查** - 檢查帳號是否停用
+        5. **密碼過期檢查** - 未開 2FA 且密碼超過 180 天需重設
+        6. **雙因素認證判斷** - 檢查是否需要 2FA,或為常用裝置
+        7. **Active Directory 同步** - 成功登入後同步密碼到 AD
+        8. **裝置資訊記錄** - 記錄登入裝置指紋
+
+        ## 安全機制
+        - **reCAPTCHA 驗證** - 所有請求必須通過 Google reCAPTCHA
+        - **登入失敗處理** - 記錄失敗次數並發送通知郵件
+        - **登入延遲機制** - 失敗後增加回應延遲減緩暴力破解
+        - **敏感資料清除** - 使用後立即清除密碼變數
+        - **詳細日誌記錄** - 記錄所有登入嘗試到 `portal_login.log` 和 `portal_login_security.log`
+
+        ## 特殊帳號支援
+        - **管理測試帳號** - 密碼格式 `ccmis@{id}innycu{year}` (限校內 IP)
+        - **Portal 測試帳號** - 密碼格式 `ccmis@{id}inymportal{year}` (限學生帳號,校內 IP)
+        - **一般測試帳號** - `0000123`, `t00000` (密碼: `zaq1XSW@`)
+        - **稽核測試帳號** - `0000999`-`0000992`, `T99999`-`T99988` (密碼: `zaq1XSW@{id}`)
+
+        ## 常用裝置判斷
+        若使用者已啟用「記住此裝置」(CheckType=2) 且裝置指紋匹配,則跳過 2FA 驗證
+
+        ## 密碼過期規則
+        - 自 **2023-10-16** 起生效
+        - 未開啟 2FA 的帳號,密碼超過 **180 天**未修改將強制重設
+        - 測試帳號 (flag='Y') 不受此限制
+
+      security: []  # 此 endpoint 不需要認證
+
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - id
+                - pwd
+                - recaptchaToken
+              properties:
+                id:
+                  type: string
+                  description: |
+                    用戶 ID (學號或教職員號)
+                    - 學生: 純數字 (例: 1234567)
+                    - 教職員: 字母開頭 (例: t12345)
+                  example: "1234567"
+                  minLength: 1
+                pwd:
+                  type: string
+                  description: 用戶 LDAP 密碼
+                  format: password
+                  example: "userPassword123"
+                  minLength: 1
+                recaptchaToken:
+                  type: string
+                  description: Google reCAPTCHA v3 驗證 token
+                  example: "03AFcWeA7QHC..."
+                  minLength: 1
+                deviceInfo:
+                  type: string
+                  description: |
+                    裝置資訊 JSON 字串,用於裝置指紋識別和常用裝置判斷
+                    必須包含 `fingerPrint` 欄位
+                  example: '{"fingerPrint": "abc123def456hash"}'
+
+      responses:
+        '200':
+          description: |
+            登入成功 - 根據是否需要雙因素認證返回不同格式
+            - 需要 2FA: 返回臨時 token,需要進一步調用 `/TwofaLogin` 完成驗證
+            - 免 2FA: 直接返回完整用戶資訊和最終 token
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/TwoFactorRequiredResponse'
+                    description: 需要雙因素認證
+                  - $ref: '#/components/schemas/LoginSuccessResponse'
+                    description: 登入成功(免 2FA)
+              examples:
+                requiresTwoFactor:
+                  summary: 需要 2FA
+                  value:
+                    2fa: true
+                    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                loginSuccess:
+                  summary: 登入成功(免 2FA)
+                  value:
+                    id: "1234567"
+                    name: "王小明"
+                    dept: "資訊工程學系"
+                    mail: "student@nycu.edu.tw"
+                    idStatus: "1"
+                    ou: "student"
+                    2fa: "disable"
+                    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    loginInfo: null
+                    deviceInfo: null
+
+        '404':
+          description: |
+            請求失敗 - 包含多種失敗情況
+            - 認證失敗
+            - 帳號不存在
+            - 帳號未啟用
+            - 密碼過期
+            - reCAPTCHA 驗證失敗
+            - 錯誤次數過多
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidCredentials:
+                  summary: 帳號密碼錯誤
+                  value:
+                    status: "false"
+                    message: "帳號密碼錯誤或帳號尚未啟用"
+                accountDisabled:
+                  summary: 帳號未啟用
+                  value:
+                    status: "false"
+                    message: "帳號未啟用"
+                passwordExpired:
+                  summary: 密碼過期
+                  value:
+                    status: "false"
+                    message: "密碼已到期,請修改密碼"
+                passwordExpiredNoTwoFactor:
+                  summary: 密碼過期(未開 2FA)
+                  value:
+                    status: "false"
+                    message: "密碼已到期,請使用忘記密碼重設。<br /><br />The password has expired. Please use \"Forgot Password\" to reset."
+                tooManyAttempts:
+                  summary: 錯誤次數過多
+                  value:
+                    status: "false"
+                    message: "錯誤次數過多,請稍後再試"
+                recaptchaFailed:
+                  summary: reCAPTCHA 驗證失敗
+                  value:
+                    status: "false"
+                    message: "無效請求,驗證失敗"
+                userNotFound:
+                  summary: 查無相關資料
+                  value:
+                    status: "false"
+                    message: "查無相關資料"
+
+        '405':
+          description: HTTP 方法不允許 - 僅接受 POST 請求或缺少必要參數
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                methodNotAllowed:
+                  summary: 不支援的 HTTP 方法
+                  value:
+                    status: "false"
+                    message: "method not allowed."
+                missingData:
+                  summary: 缺少必要參數
+                  value:
+                    status: "false"
+                    message: "No data!"
+
+  /TwofaLogin:
+    post:
+      tags:
+        - 雙因素認證
+      summary: 雙因素認證登入
+      description: |
+        完成雙因素認證流程
+        
+        ## 流程
+        1. 驗證 TOTP 代碼
+        2. 檢查設備指紋
+        3. 返回完整的用戶資訊和 token
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - token
+                - totp_code
+                - recaptchaToken
+              properties:
+                token:
+                  type: string
+                  description: 2FA token
+                  example: "2fa_token_123"
+                totp_code:
+                  type: string
+                  description: TOTP 驗證碼
+                  pattern: '^[0-9]{6}$'
+                  example: "123456"
+                recaptchaToken:
+                  type: string
+                  description: reCAPTCHA 驗證 token
+                  example: "03AFcWeA..."
+      responses:
+        '200':
+          description: 2FA 驗證成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginSuccessResponse'
+        '400':
+          description: 無效請求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 驗證失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: 請求過於頻繁
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /getUserInfo:
+    post:
+      tags:
+        - 用戶資訊
+      summary: 獲取用戶資訊
+      description: |
+        獲取當前登入用戶的詳細資訊
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - token
+              properties:
+                token:
+                  type: string
+                  description: JWT token
+                  example: "jwt_token_123"
+      responses:
+        '200':
+          description: 成功獲取用戶資訊
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserInfoResponse'
+        '401':
+          description: 無效或過期的 token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 用戶不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /checkMail:
+    post:
+      tags:
+        - 郵件服務
+      summary: 檢查郵件帳戶狀態
+      description: |
+        檢查用戶的郵件帳戶狀態和設定
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - token
+              properties:
+                token:
+                  type: string
+                  description: JWT token
+                  example: "jwt_token_123"
+      responses:
+        '200':
+          description: 成功獲取郵件資訊
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailInfoResponse'
+        '401':
+          description: 無效或過期的 token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /relay:
+    post:
+      tags:
+        - 系統服務
+      summary: 系統轉發服務
+      description: |
+        轉發請求到其他校內系統
+        
+        ## 限制
+        - 僅限校內 IP 訪問
+        - 需要 VPN 連接
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - url
+                - token
+                - sysDirect
+              properties:
+                url:
+                  type: string
+                  description: 目標系統 URL
+                  example: "https://system.nycu.edu.tw"
+                token:
+                  type: string
+                  description: 用戶 token
+                  example: "user_token_123"
+                sysDirect:
+                  type: string
+                  description: 系統識別碼
+                  example: "student_system"
+      responses:
+        '200':
+          description: 轉發成功
+          content:
+            text/html:
+              schema:
+                type: string
+        '403':
+          description: 需要 VPN 連接
+          content:
+            text/html:
+              schema:
+                type: string
+        '405':
+          description: 不允許的 URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT Token 認證
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API Key 認證
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: boolean
+          example: false
+        message:
+          type: string
+          description: 錯誤訊息
+          example: "Invalid request"
+        statusCode:
+          type: integer
+          description: HTTP 狀態碼
+          example: 400
+
+    LoginSuccessResponse:
+      type: object
+      required:
+        - id
+        - name
+        - dept
+        - mail
+        - idStatus
+        - ou
+        - 2fa
+        - token
+      properties:
+        id:
+          type: string
+          description: 用戶帳號 (學號或教職員號)
+          example: "1234567"
+        name:
+          type: string
+          description: 用戶姓名 (fullname from LDAP)
+          example: "王小明"
+        dept:
+          type: string
+          description: 部門名稱 (dept from LDAP)
+          example: "資訊工程學系"
+        mail:
+          type: string
+          format: email
+          description: 電子郵件地址 (mail from LDAP)
+          example: "student@nycu.edu.tw"
+        idStatus:
+          type: string
+          description: |
+            員工狀態碼 (employeestatus from LDAP)
+            - "1": 在職/在學
+            - "2": 離職/休學
+            - "3": 退休/畢業
+          example: "1"
+        ou:
+          type: string
+          description: |
+            組織單位 (ou from LDAP)
+            - "student": 學生
+            - "staff": 教職員
+            - "alumni": 校友
+          example: "student"
+        '2fa':
+          type: string
+          enum: ["disable"]
+          description: 雙因素認證狀態 (此回應固定為 "disable",表示已完成或跳過 2FA)
+          example: "disable"
+        token:
+          type: string
+          description: |
+            JWT token (使用 portal_key 簽章)
+            包含 payload: id, oldid, ou, iat
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjEyMzQ1NjciLCJvbGRpZCI6IjEyMzQ1NjciLCJvdSI6InN0dWRlbnQiLCJpYXQiOjE3MzQ4MjM0NTZ9..."
+        loginInfo:
+          type: object
+          nullable: true
+          description: 登入資訊 (目前實作中為 null)
+          example: null
+        deviceInfo:
+          type: object
+          nullable: true
+          description: 裝置資訊 (目前實作中為 null)
+          example: null
+
+    TwoFactorRequiredResponse:
+      type: object
+      required:
+        - 2fa
+        - token
+      properties:
+        '2fa':
+          type: boolean
+          description: 是否需要雙因素認證 (此回應固定為 true)
+          example: true
+        token:
+          type: string
+          description: |
+            臨時 2FA token (使用 "2falogin" namespace 簽章)
+            包含 payload: id, oldid, ou, system, iat
+            需傳遞到 `/TwofaLogin` 端點完成 2FA 驗證
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjEyMzQ1NjciLCJvbGRpZCI6IjEyMzQ1NjciLCJvdSI6InN0dWRlbnQiLCJzeXN0ZW0iOiJQb3J0YWwiLCJpYXQiOjE3MzQ4MjM0NTZ9..."
+
+    UserInfoResponse:
+      type: object
+      properties:
+        status:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            id:
+              type: string
+              example: "12345678"
+            name:
+              type: string
+              example: "張三"
+            dept:
+              type: string
+              example: "資訊工程學系"
+            mail:
+              type: string
+              format: email
+              example: "user@nycu.edu.tw"
+            mobile:
+              type: string
+              example: "0912345678"
+            title:
+              type: string
+              example: "學生"
+            birthday:
+              type: string
+              format: date
+              example: "1990-01-01"
+
+    MailInfoResponse:
+      type: object
+      properties:
+        status:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            email:
+              type: string
+              format: email
+              example: "user@nycu.edu.tw"
+            status:
+              type: string
+              example: "active"
+            quota:
+              type: integer
+              example: 1073741824
+            used:
+              type: integer
+              example: 536870912
+            lastLogin:
+              type: string
+              format: date-time
+              example: "2024-12-01T10:30:00Z"
+
+tags:
+  - name: TOTP 認證
+    description: 雙因素認證相關 API
+  - name: 用戶認證
+    description: 用戶登入和認證相關 API
+  - name: 雙因素認證
+    description: 2FA 相關 API
+  - name: 密碼管理
+    description: 密碼重設和管理相關 API
+  - name: 用戶資訊
+    description: 用戶資訊查詢相關 API
+  - name: 郵件服務
+    description: 郵件帳戶管理相關 API
+  - name: 系統服務
+    description: 系統轉發和其他服務 API
