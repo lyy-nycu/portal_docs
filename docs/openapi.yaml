@@ -380,47 +380,189 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/auth/login:
+    post:
+      tags:
+        - 用戶認證
+      summary: 用戶登入 (v1)
+      description: |
+        使用 LDAP 進行用戶認證，支援雙因素認證流程
+
+        ## 認證流程
+        1. 驗證 reCAPTCHA token
+        2. 驗證用戶帳號密碼 (LDAP)
+        3. 檢查帳戶狀態 (是否禁用)
+        4. 檢查網路位置 (校內/校外)
+        5. 判斷是否需要雙因素認證
+        6. 返回結果：
+           - 需要 2FA: 返回 Pre-Auth Token
+           - 不需要 2FA: 返回完整登入資訊
+
+        ## 網路位置與 2FA 邏輯
+        - **校外登入**:
+          - 有設定 2FA → 要求 2FA 驗證
+          - 無設定 2FA → 拒絕登入 (需使用 VPN)
+        - **校內登入**:
+          - 無設定 2FA → 直接登入
+          - 有設定 2FA 且 AlwaysVerify=Y → 要求 2FA
+          - 有設定 2FA 且 AlwaysVerify=N → 檢查信任裝置
+
+        ## 安全功能
+        - 登入失敗記錄與延遲機制
+        - 3次失敗後開始延遲 (指數退避)
+        - 密碼過期檢查 (180天)
+        - 裝置指紋追蹤
+
+      security: []
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - id
+                - pwd
+                - recaptchaToken
+              properties:
+                id:
+                  type: string
+                  description: 用戶帳號 (學號或人事代號)
+                  example: "E00001"
+                  minLength: 1
+                pwd:
+                  type: string
+                  description: 用戶密碼
+                  format: password
+                  example: "MyP@ssw0rd"
+                  minLength: 1
+                recaptchaToken:
+                  type: string
+                  description: Google reCAPTCHA v3 驗證 token
+                  example: "03AGdBq24..."
+                deviceInfo:
+                  type: string
+                  description: 裝置指紋資訊 (JSON 字串格式)
+                  example: '{"fingerPrint": "abc123def456"}'
+
+      responses:
+        '200':
+          description: 登入成功或需要雙因素認證
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/LoginDirectSuccessResponse'
+                  - $ref: '#/components/schemas/PreAuthTokenResponse'
+              examples:
+                directLogin:
+                  summary: 直接登入成功 (無需 2FA)
+                  value:
+                    id: "E00001"
+                    name: "王小明"
+                    dept: "資訊工程學系"
+                    mail: "e00001@nycu.edu.tw"
+                    idStatus: "1"
+                    ou: "STUDENT"
+                    "2fa": false
+                    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+                require2FA:
+                  summary: 需要雙因素認證
+                  value:
+                    "2fa": true
+                    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    methods: ["mobile-app", "email"]
+                    expires_in: 180
+
+        '400':
+          description: 無效請求 - 缺少必要欄位
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: "error"
+                message: "Missing required fields: id, pwd, recaptchaToken"
+                statusCode: 400
+
+        '403':
+          description: 禁止訪問 - 校外無 2FA 或帳戶被鎖定
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                offCampusNo2FA:
+                  summary: 校外登入但未設定 2FA
+                  value:
+                    status: "error"
+                    message: "Please use VPN or configure two-factor authentication to login from off-campus"
+                    statusCode: 403
+
+        '404':
+          description: 帳戶不存在、未啟用或密碼錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidCredentials:
+                  summary: 帳號密碼錯誤
+                  value:
+                    status: "error"
+                    message: "Invalid credentials or account not activated"
+                    statusCode: 404
+
+                accountDisabled:
+                  summary: 帳戶已停用
+                  value:
+                    status: "error"
+                    message: "Account not activated"
+                    statusCode: 404
+
+                passwordExpired:
+                  summary: 密碼已過期
+                  value:
+                    status: "error"
+                    message: "Password expired, please change password"
+                    statusCode: 404
+
+                tooManyAttempts:
+                  summary: 登入嘗試次數過多
+                  value:
+                    status: "error"
+                    message: "Too many failed attempts, please try again later"
+                    statusCode: 404
+
+        '500':
+          description: 伺服器錯誤 - LDAP 連線失敗或系統錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                systemError:
+                  summary: 系統錯誤
+                  value:
+                    status: "error"
+                    message: "System error, please try again later"
+                    statusCode: 500
+
   /PortalLdapLogin:
     post:
       tags:
         - 用戶認證
-      summary: Portal LDAP 登入
+      summary: LDAP 登入
       description: |
-        使用 LDAP 進行 Portal 單一登入系統認證
-
+        使用 LDAP 進行用戶認證
+        
         ## 認證流程
-        1. **reCAPTCHA 驗證** - 防止機器人攻擊
-        2. **LDAP 身份驗證** - 使用 `ldap_bind_ext` 進行密碼驗證
-        3. **密碼策略檢查** - 檢查密碼過期、錯誤次數過多等狀態
-        4. **帳戶狀態檢查** - 檢查帳號是否停用
-        5. **密碼過期檢查** - 未開 2FA 且密碼超過 180 天需重設
-        6. **雙因素認證判斷** - 檢查是否需要 2FA,或為常用裝置
-        7. **Active Directory 同步** - 成功登入後同步密碼到 AD
-        8. **裝置資訊記錄** - 記錄登入裝置指紋
-
-        ## 安全機制
-        - **reCAPTCHA 驗證** - 所有請求必須通過 Google reCAPTCHA
-        - **登入失敗處理** - 記錄失敗次數並發送通知郵件
-        - **登入延遲機制** - 失敗後增加回應延遲減緩暴力破解
-        - **敏感資料清除** - 使用後立即清除密碼變數
-        - **詳細日誌記錄** - 記錄所有登入嘗試到 `portal_login.log` 和 `portal_login_security.log`
-
-        ## 特殊帳號支援
-        - **管理測試帳號** - 密碼格式 `ccmis@{id}innycu{year}` (限校內 IP)
-        - **Portal 測試帳號** - 密碼格式 `ccmis@{id}inymportal{year}` (限學生帳號,校內 IP)
-        - **一般測試帳號** - `0000123`, `t00000` (密碼: `zaq1XSW@`)
-        - **稽核測試帳號** - `0000999`-`0000992`, `T99999`-`T99988` (密碼: `zaq1XSW@{id}`)
-
-        ## 常用裝置判斷
-        若使用者已啟用「記住此裝置」(CheckType=2) 且裝置指紋匹配,則跳過 2FA 驗證
-
-        ## 密碼過期規則
-        - 自 **2023-10-16** 起生效
-        - 未開啟 2FA 的帳號,密碼超過 **180 天**未修改將強制重設
-        - 測試帳號 (flag='Y') 不受此限制
-
-      security: []  # 此 endpoint 不需要認證
-
+        1. 驗證用戶名和密碼
+        2. 檢查帳戶狀態
+        3. 檢查是否需要雙因素認證
+        4. 返回 JWT token 或要求 2FA
       requestBody:
         required: true
         content:
@@ -434,131 +576,53 @@ paths:
               properties:
                 id:
                   type: string
-                  description: |
-                    用戶 ID (學號或教職員號)
-                    - 學生: 純數字 (例: 1234567)
-                    - 教職員: 字母開頭 (例: t12345)
-                  example: "1234567"
-                  minLength: 1
+                  description: 用戶 ID
+                  example: "12345678"
                 pwd:
                   type: string
-                  description: 用戶 LDAP 密碼
-                  format: password
-                  example: "userPassword123"
-                  minLength: 1
+                  description: 用戶密碼
+                  example: "userpassword"
                 recaptchaToken:
                   type: string
-                  description: Google reCAPTCHA v3 驗證 token
-                  example: "03AFcWeA7QHC..."
-                  minLength: 1
+                  description: reCAPTCHA 驗證 token
+                  example: "03AFcWeA..."
                 deviceInfo:
                   type: string
-                  description: |
-                    裝置資訊 JSON 字串,用於裝置指紋識別和常用裝置判斷
-                    必須包含 `fingerPrint` 欄位
-                  example: '{"fingerPrint": "abc123def456hash"}'
-
+                  description: 設備資訊 (JSON 格式)
+                  example: '{"fingerPrint": "device_hash_123"}'
       responses:
         '200':
-          description: |
-            登入成功 - 根據是否需要雙因素認證返回不同格式
-            - 需要 2FA: 返回臨時 token,需要進一步調用 `/TwofaLogin` 完成驗證
-            - 免 2FA: 直接返回完整用戶資訊和最終 token
+          description: 登入成功
           content:
             application/json:
               schema:
                 oneOf:
-                  - $ref: '#/components/schemas/TwoFactorRequiredResponse'
-                    description: 需要雙因素認證
                   - $ref: '#/components/schemas/LoginSuccessResponse'
-                    description: 登入成功(免 2FA)
-              examples:
-                requiresTwoFactor:
-                  summary: 需要 2FA
-                  value:
-                    2fa: true
-                    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                loginSuccess:
-                  summary: 登入成功(免 2FA)
-                  value:
-                    id: "1234567"
-                    name: "王小明"
-                    dept: "資訊工程學系"
-                    mail: "student@nycu.edu.tw"
-                    idStatus: "在學"
-                    ou: "student"
-                    2fa: "disable"
-                    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                    loginInfo: null
-                    deviceInfo: null
-
+                  - $ref: '#/components/schemas/TwoFactorRequiredResponse'
+        '400':
+          description: 無效請求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 認證失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: |
-            請求失敗 - 包含多種失敗情況
-            - 認證失敗
-            - 帳號不存在
-            - 帳號未啟用
-            - 密碼過期
-            - reCAPTCHA 驗證失敗
-            - 錯誤次數過多
+          description: 帳戶不存在或未啟用
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                invalidCredentials:
-                  summary: 帳號密碼錯誤
-                  value:
-                    status: "false"
-                    message: "帳號密碼錯誤或帳號尚未啟用"
-                accountDisabled:
-                  summary: 帳號未啟用
-                  value:
-                    status: "false"
-                    message: "帳號未啟用"
-                passwordExpired:
-                  summary: 密碼過期
-                  value:
-                    status: "false"
-                    message: "密碼已到期,請修改密碼"
-                passwordExpiredNoTwoFactor:
-                  summary: 密碼過期(未開 2FA)
-                  value:
-                    status: "false"
-                    message: "密碼已到期,請使用忘記密碼重設。<br /><br />The password has expired. Please use \"Forgot Password\" to reset."
-                tooManyAttempts:
-                  summary: 錯誤次數過多
-                  value:
-                    status: "false"
-                    message: "錯誤次數過多,請稍後再試"
-                recaptchaFailed:
-                  summary: reCAPTCHA 驗證失敗
-                  value:
-                    status: "false"
-                    message: "無效請求,驗證失敗"
-                userNotFound:
-                  summary: 查無相關資料
-                  value:
-                    status: "false"
-                    message: "查無相關資料"
-
-        '405':
-          description: HTTP 方法不允許 - 僅接受 POST 請求或缺少必要參數
+        '429':
+          description: 請求過於頻繁
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                methodNotAllowed:
-                  summary: 不支援的 HTTP 方法
-                  value:
-                    status: "false"
-                    message: "method not allowed."
-                missingData:
-                  summary: 缺少必要參數
-                  value:
-                    status: "false"
-                    message: "No data!"
 
   /TwofaLogin:
     post:
@@ -781,88 +845,129 @@ components:
 
     LoginSuccessResponse:
       type: object
-      required:
-        - id
-        - name
-        - dept
-        - mail
-        - idStatus
-        - ou
-        - 2fa
-        - token
       properties:
         id:
           type: string
-          description: 用戶帳號 (學號或教職員號)
-          example: "1234567"
+          description: 用戶 ID
+          example: "12345678"
         name:
           type: string
-          description: 用戶姓名 (fullname from LDAP)
-          example: "王小明"
+          description: 用戶姓名
+          example: "張三"
         dept:
           type: string
-          description: 部門名稱 (dept from LDAP)
+          description: 部門
           example: "資訊工程學系"
         mail:
           type: string
           format: email
-          description: 電子郵件地址 (mail from LDAP)
-          example: "student@nycu.edu.tw"
+          description: 郵箱地址
+          example: "user@nycu.edu.tw"
         idStatus:
           type: string
-          description: |
-            員工狀態碼 (employeestatus from LDAP)
-            - "1": 在職/在學
-            - "2": 離職/休學
-            - "3": 退休/畢業
-          example: "1"
+          description: 帳戶狀態
+          example: "active"
         ou:
           type: string
-          description: |
-            組織單位 (ou from LDAP)
-            - "student": 學生
-            - "staff": 教職員
-            - "alumni": 校友
+          description: 組織單位
           example: "student"
-        '2fa':
-          type: string
-          enum: ["disable"]
-          description: 雙因素認證狀態 (此回應固定為 "disable",表示已完成或跳過 2FA)
-          example: "disable"
         token:
           type: string
-          description: |
-            JWT token (使用 portal_key 簽章)
-            包含 payload: id, oldid, ou, iat
-          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjEyMzQ1NjciLCJvbGRpZCI6IjEyMzQ1NjciLCJvdSI6InN0dWRlbnQiLCJpYXQiOjE3MzQ4MjM0NTZ9..."
+          description: JWT token
+          example: "jwt_token_123"
         loginInfo:
           type: object
-          nullable: true
-          description: 登入資訊 (目前實作中為 null)
-          example: null
+          description: 登入資訊
         deviceInfo:
           type: object
-          nullable: true
-          description: 裝置資訊 (目前實作中為 null)
-          example: null
+          description: 設備資訊
 
     TwoFactorRequiredResponse:
       type: object
-      required:
-        - 2fa
-        - token
       properties:
         '2fa':
           type: boolean
-          description: 是否需要雙因素認證 (此回應固定為 true)
+          example: true
+        token:
+          type: string
+          description: 2FA token
+          example: "2fa_token_123"
+
+    LoginDirectSuccessResponse:
+      type: object
+      description: 直接登入成功響應 (無需 2FA)
+      properties:
+        id:
+          type: string
+          description: 用戶 ID
+          example: "E00001"
+        name:
+          type: string
+          description: 用戶姓名
+          example: "王小明"
+        dept:
+          type: string
+          description: 部門/系所
+          example: "資訊工程學系"
+        mail:
+          type: string
+          format: email
+          description: 郵箱地址
+          example: "e00001@nycu.edu.tw"
+        idStatus:
+          type: string
+          description: 帳戶狀態 (1=啟用)
+          example: "1"
+        ou:
+          type: string
+          description: 組織單位 (STUDENT/STAFF/FACULTY)
+          example: "STUDENT"
+        '2fa':
+          type: string
+          description: 2FA 狀態
+          enum: ["enable", "disable"]
+          example: "disable"
+        token:
+          type: string
+          description: JWT 完整登入 token
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IkUwMDAwMSIsIm9sZGlkIjoiRTAwMDAxIiwib3UiOiJTVFVERU5UIiwiaWF0IjoxNzMwMDAwMDAwfQ..."
+
+    PreAuthTokenResponse:
+      type: object
+      description: Pre-Auth Token 響應 (需要 2FA 驗證)
+      required:
+        - 2fa
+        - token
+        - methods
+        - expires_in
+      properties:
+        '2fa':
+          type: boolean
+          description: 是否需要 2FA
           example: true
         token:
           type: string
           description: |
-            臨時 2FA token (使用 "2falogin" namespace 簽章)
-            包含 payload: id, oldid, ou, system, iat
-            需傳遞到 `/TwofaLogin` 端點完成 2FA 驗證
-          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjEyMzQ1NjciLCJvbGRpZCI6IjEyMzQ1NjciLCJvdSI6InN0dWRlbnQiLCJzeXN0ZW0iOiJQb3J0YWwiLCJpYXQiOjE3MzQ4MjM0NTZ9..."
+            Pre-Auth Token (JWT 格式)
+
+            Payload 包含：
+            - sub: 用戶 ID
+            - scope: "2fa_pending"
+            - jti: 唯一 token ID
+            - iat: 簽發時間
+            - exp: 過期時間 (3分鐘)
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJFMDAwMDEiLCJzY29wZSI6IjJmYV9wZW5kaW5nIiwianRpIjoiYTFiMmMzZDRlNWY2IiwiaWF0IjoxNzMwMDAwMDAwLCJleHAiOjE3MzAwMDAxODB9..."
+        methods:
+          type: array
+          description: 可用的 2FA 驗證方法
+          items:
+            type: string
+            enum: ["mobile-app", "email"]
+          example: ["mobile-app", "email"]
+        expires_in:
+          type: integer
+          description: Token 過期時間 (秒)
+          example: 180
 
     UserInfoResponse:
       type: object
