@@ -30,12 +30,12 @@ info:
     url: https://opensource.org/licenses/MIT
 
 servers:
-  - url: https://portal.nycu.edu.tw/portal
-    description: Prod
-  - url: https://portal.test.nycu.edu.tw/portal
-    description: Dev
-  - url: http://localhost:8000/portal
-    description: Local Dev
+  - url: https://portal.nycu.edu.tw/api
+    description: 生產環境
+  - url: https://portal-dev.nycu.edu.tw/api
+    description: 開發環境
+  - url: http://localhost:8000/api
+    description: 本地開發環境
 
 security:
   - BearerAuth: []
@@ -550,6 +550,589 @@ paths:
                     message: "System error, please try again later"
                     statusCode: 500
 
+  /api/v1/auth/send:
+    post:
+      tags:
+        - 用戶認證
+      summary: 發送驗證訊息
+      description: |
+        根據 Token 類型發送對應的驗證碼或驗證連結
+
+        ## 核心職責
+        根據 Token 內含的 `scope` 或 `auth_status` 欄位，觸發對應的發送邏輯：
+        - **OTP 驗證碼**: 發送 6 位數字驗證碼
+        - **驗證連結**: 發送包含 token 的驗證 URL（某些情境）
+
+        ## 適用情境與 Token 類型
+
+        ### 1. Pre-Auth Token (登入 2FA)
+        - **使用場景**: 用戶完成帳號密碼驗證後，需要進行雙因素認證
+        - **Token 來源**: `POST /api/v1/auth/login` 返回
+        - **Token 特徵**:
+          - `scope: "2fa_pending"`
+          - `sub: "E00001"` (用戶 ID，由伺服器簽發)
+          - 有效期: 3 分鐘
+        - **發送內容**: OTP 驗證碼到用戶郵箱或行動裝置
+        - **速率限制**: 無強制冷卻期（但有總次數限制，防止濫用）
+
+        ### 2. Request Token (忘記密碼/帳號啟用)
+        - **使用場景**: 用戶請求密碼重設或帳號啟用
+        - **Token 來源**:
+          - `POST /api/v1/auth/password-reset/request`
+          - `POST /api/v1/auth/account-activation/request`
+        - **Token 特徵**:
+          - `scope: "password_reset"` 或 `"account_activation"`
+          - `sub: "E00001"` (用戶 ID)
+          - `email: "e00001@nycu.edu.tw"` (可選，發送目標)
+          - 有效期: 10 分鐘
+        - **發送內容**: OTP 驗證碼或重設連結
+        - **速率限制**: **必須實施 30 秒冷卻期**，防止郵件/簡訊濫發 (DoS)
+
+        ## 用戶識別方式
+        - **用戶資訊來源**: 從 Token 的 `sub` (subject) 欄位取得用戶 ID
+        - **安全保證**: 由於 `sub` 由伺服器簽名，用戶無法偽造他人身份
+        - **發送目標**:
+          - 優先使用 Token 中的 `email` 欄位（如果有）
+          - 否則從資料庫查詢用戶的註冊郵箱
+
+        ## 發送方法選擇
+        - 客戶端可透過 `method` 參數選擇發送途徑
+        - 支援的方法: `email` (郵箱) 或 `mobile-app` (行動裝置推送)
+        - 如果不提供 `method`，使用系統預設方法或 Token 中記錄的偏好
+
+        ## Token 驗證要求
+        1. **簽名驗證**: 必須驗證 Token 使用正確的密鑰簽名
+        2. **有效期驗證**: Token 必須未過期 (`exp` claim)
+        3. **Audience/Issuer 驗證**: 確保 Token 由本系統簽發且用於本系統
+        4. **Scope 驗證**: Token 的 `scope` 必須為允許的值之一
+        5. **速率限制** (僅 Request Token):
+           - 檢查上次發送時間 (從 Redis 取得)
+           - 實施 30 秒冷卻期
+           - 防止 DoS 攻擊
+
+        ## 重要說明
+        - 成功發送後，**Token 保持有效**
+        - 同一個 Token 可用於：
+          - 重新發送驗證訊息（受速率限制）
+          - 提交驗證碼進行驗證 (POST /api/v1/auth/verify)
+        - Token 在以下情況失效：
+          - 驗證成功後
+          - 超過有效期
+          - 被明確撤銷
+
+      security:
+        - BearerAuth: []
+
+      requestBody:
+        required: false
+        description: |
+          請求 body 通常為空，或僅包含 `method` 欄位用於選擇發送方式。
+
+          **注意**: 用戶身份資訊（用戶 ID、email）從 Token 的 `sub` 欄位取得，
+          客戶端不應該也不需要在 body 中提供用戶資訊。
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                method:
+                  type: string
+                  description: 發送方法（可選）。如果不提供，使用系統預設或 Token 中的偏好設定。
+                  enum:
+                    - email
+                    - mobile-app
+                  example: "email"
+            examples:
+              emailMethod:
+                summary: 使用 email 發送
+                value:
+                  method: "email"
+
+              mobileAppMethod:
+                summary: 使用 mobile-app 發送
+                value:
+                  method: "mobile-app"
+
+              emptyBody:
+                summary: 使用預設方法（空 body 或 {}）
+                value: {}
+
+      responses:
+        '200':
+          description: 驗證訊息發送成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - message
+                properties:
+                  message:
+                    type: string
+                    description: 成功訊息
+                    example: "Verification code sent."
+                  sent_to:
+                    type: string
+                    description: 發送目標（脫敏顯示，保護隱私）
+                    example: "e***01@nycu.edu.tw"
+                  method:
+                    type: string
+                    description: 實際使用的發送方法
+                    enum:
+                      - email
+                      - mobile-app
+                    example: "email"
+                  expires_in:
+                    type: integer
+                    description: 驗證碼有效時間（秒）
+                    example: 180
+                  retry_after:
+                    type: integer
+                    description: 下次可重新發送的等待時間（秒，僅 Request Token 情境）
+                    example: 30
+              examples:
+                preAuthTokenSuccess:
+                  summary: Pre-Auth Token - 登入 2FA
+                  description: 發送登入雙因素認證驗證碼
+                  value:
+                    message: "Verification code sent."
+                    sent_to: "e***01@nycu.edu.tw"
+                    method: "email"
+                    expires_in: 180
+
+                requestTokenSuccess:
+                  summary: Request Token - 忘記密碼
+                  description: 發送密碼重設驗證碼，包含冷卻期資訊
+                  value:
+                    message: "Verification code sent."
+                    sent_to: "user@example.com"
+                    method: "email"
+                    expires_in: 600
+                    retry_after: 30
+
+        '400':
+          description: 無效請求 - 參數錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidMethod:
+                  summary: 不支援的發送方法
+                  value:
+                    status: "error"
+                    message: "Invalid method. Supported methods: email, mobile-app"
+                    statusCode: 400
+
+                methodNotAvailable:
+                  summary: 該用戶不支援此發送方法
+                  value:
+                    status: "error"
+                    message: "Mobile app method not available for this user"
+                    statusCode: 400
+
+        '401':
+          description: 未授權 - Token 無效、過期或簽名錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingToken:
+                  summary: 缺少 Authorization header
+                  value:
+                    status: "error"
+                    message: "Missing authorization token"
+                    statusCode: 401
+
+                invalidSignature:
+                  summary: Token 簽名無效
+                  value:
+                    status: "error"
+                    message: "Invalid token signature"
+                    statusCode: 401
+
+                expiredToken:
+                  summary: Token 已過期
+                  value:
+                    status: "error"
+                    message: "Token expired"
+                    statusCode: 401
+
+                invalidScope:
+                  summary: Token scope 不適用於此操作
+                  value:
+                    status: "error"
+                    message: "Invalid token scope for send operation"
+                    statusCode: 401
+
+        '403':
+          description: 禁止訪問 - Token 有效但操作被拒絕
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidAudience:
+                  summary: Token audience 不匹配
+                  value:
+                    status: "error"
+                    message: "Invalid token audience"
+                    statusCode: 403
+
+                invalidIssuer:
+                  summary: Token issuer 不匹配
+                  value:
+                    status: "error"
+                    message: "Invalid token issuer"
+                    statusCode: 403
+
+                tokenRevoked:
+                  summary: Token 已被撤銷
+                  value:
+                    status: "error"
+                    message: "Token has been revoked"
+                    statusCode: 403
+
+        '429':
+          description: 速率限制 - 請求過於頻繁（僅 Request Token 情境）
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                  - message
+                  - retry_after
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - error
+                    example: "error"
+                  message:
+                    type: string
+                    description: 錯誤訊息
+                    example: "Too many requests. Please wait before resending."
+                  retry_after:
+                    type: integer
+                    description: 需要等待的秒數（30 秒冷卻期）
+                    example: 25
+                  last_sent_at:
+                    type: integer
+                    description: 上次發送時間戳（Unix timestamp）
+                    example: 1730000005
+                  statusCode:
+                    type: integer
+                    example: 429
+              examples:
+                cooldownPeriod:
+                  summary: 冷卻期間（30秒內重複發送）
+                  description: Request Token 情境下，距離上次發送未滿 30 秒
+                  value:
+                    status: "error"
+                    message: "Too many requests. Please wait 25 seconds before resending."
+                    retry_after: 25
+                    last_sent_at: 1730000005
+                    statusCode: 429
+
+        '500':
+          description: 伺服器錯誤 - 發送失敗或系統錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                emailSendFailure:
+                  summary: 郵件發送失敗
+                  value:
+                    status: "error"
+                    message: "Failed to send email"
+                    statusCode: 500
+
+                smsSendFailure:
+                  summary: 簡訊發送失敗
+                  value:
+                    status: "error"
+                    message: "Failed to send SMS"
+                    statusCode: 500
+
+                systemError:
+                  summary: 系統錯誤
+                  value:
+                    status: "error"
+                    message: "Internal server error"
+                    statusCode: 500
+
+  /api/v1/auth/verify:
+    post:
+      tags:
+        - 用戶認證
+      summary: 驗證 OTP/Code
+      description: |
+        驗證用戶提交的 OTP 驗證碼或 Code，完成認證流程
+
+        ## 核心職責
+        根據不同的認證流程，驗證用戶提交的驗證碼：
+        - **OTP 驗證**: 驗證 6 位數字的 OTP 碼
+        - **Code 驗證**: 驗證 Magic Link 或重設連結中的 Code
+
+        ## 適用情境與認證流程
+
+        ### 1. Pre-Auth Token (登入 2FA)
+        - **使用場景**: 用戶完成帳號密碼驗證後，需要驗證 2FA OTP
+        - **Token 來源**: `POST /api/v1/auth/login` 返回的 Pre-Auth Token
+        - **請求方式**:
+          - Header: `Authorization: Bearer <Pre-Auth Token>`
+          - Body: `{"otp": "123456"}`
+        - **Token 特徵**:
+          - `scope: "2fa_pending"`
+          - `sub: "E00001"` (用戶 ID)
+          - 有效期: 3 分鐘
+        - **驗證成功**: 銷毀 Pre-Auth Token，簽發完整的 Access Token
+        - **安全機制**:
+          - 最大嘗試次數限制 (防暴力破解)
+          - Token 綁定 IP/User-Agent (可選)
+
+        ### 2. Request Token (忘記密碼/帳號啟用)
+        - **使用場景**: 用戶驗證忘記密碼或帳號啟用流程中的驗證碼
+        - **Token 來源**:
+          - `POST /api/v1/auth/password-reset/request`
+          - `POST /api/v1/auth/account-activation/request`
+        - **請求方式**:
+          - Header: 無 (匿名請求)
+          - Body: `{"code": "<CodeValue>", "username": "user@example.com"}`
+        - **驗證成功**:
+          - 忘記密碼/帳號啟用: 簽發 Pre-Auth Token (scope: `password_reset_verified`) 用於後續設定新密碼
+        - **安全機制**:
+          - Code 單次有效 (驗證後立即失效)
+          - 最大嘗試次數限制
+
+        ## 驗證流程
+
+        ### 2FA 流程 (Pre-Auth Token)
+        1. 從 Authorization Header 解析並驗證 Pre-Auth Token
+        2. 檢查 Token 簽名、有效期、scope
+        3. 從 Redis 檢查嘗試次數 (key: `2fa_attempts:{jti}`)
+        4. 驗證用戶提交的 OTP
+        5. 成功: 銷毀 Pre-Auth Token，簽發 Access Token
+        6. 失敗: 嘗試次數 +1，返回錯誤
+
+        ### 忘密/啟用流程 (Code)
+        1. 從 Body 取得 Code 和 username
+        2. 從 Redis 查詢 Code 對應的狀態 (key: `reset_code:{code}`)
+        3. 驗證 Code 有效性、過期時間、使用次數
+        4. 驗證 username 與 Code 綁定的用戶是否一致
+        5. 成功: 銷毀 Code，簽發新 Token 或執行相應操作
+        6. 失敗: 嘗試次數 +1，返回錯誤
+
+        ## 嘗試次數限制
+        - **最大嘗試次數**: 3 次
+        - **超過限制**: 鎖定 Token/Code，返回 403 Forbidden
+        - **計數器重置**: Token/Code 過期時自動清除
+
+        ## Token 過期時間 (與 /api/v1/auth/send 一致)
+        - **Pre-Auth Token**: 3 分鐘 (180 秒)
+        - **Request Token**: 10 分鐘 (600 秒)
+        
+
+      security:
+        - BearerAuth: []
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/Verify2FARequest'
+                - $ref: '#/components/schemas/VerifyCodeRequest'
+            examples:
+              verify2FA:
+                summary: 驗證 2FA OTP (登入流程)
+                value:
+                  otp: "123456"
+
+              verifyPasswordReset:
+                summary: 驗證忘記密碼 Code
+                value:
+                  code: "abc123def456"
+                  username: "user@example.com"
+
+              verifyAccountActivation:
+                summary: 驗證帳號啟用 Code
+                value:
+                  code: "xyz789uvw012"
+                  username: "newuser@example.com"
+
+      responses:
+        '200':
+          description: 驗證成功
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Verify2FASuccessResponse'
+                  - $ref: '#/components/schemas/VerifyPasswordResetSuccessResponse'
+                  - $ref: '#/components/schemas/VerifyActivationSuccessResponse'
+              examples:
+                verify2FASuccess:
+                  summary: 2FA 驗證成功 - 返回 Access Token
+                  value:
+                    status: "success"
+                    message: "Authentication successful"
+                    access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    token_type: "Bearer"
+                    expires_in: 3600
+                    user:
+                      id: "E00001"
+                      name: "張三"
+                      email: "e00001@nycu.edu.tw"
+
+                verifyPasswordResetSuccess:
+                  summary: 忘記密碼驗證成功 - 返回 Pre-Auth Token
+                  value:
+                    status: "success"
+                    message: "Verification successful. You can now reset your password."
+                    reset_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    expires_in: 180
+
+                verifyActivationSuccess:
+                  summary: 帳號啟用驗證成功
+                  value:
+                    status: "success"
+                    message: "Verification successful. You can now set your password."
+                    reset_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    expires_in: 180
+
+        '400':
+          description: 請求格式錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingOTP:
+                  summary: 缺少 OTP
+                  value:
+                    status: "error"
+                    message: "OTP is required"
+                    statusCode: 400
+
+                missingCode:
+                  summary: 缺少 Code 或 username
+                  value:
+                    status: "error"
+                    message: "Code and username are required"
+                    statusCode: 400
+
+                invalidOTPFormat:
+                  summary: OTP 格式錯誤
+                  value:
+                    status: "error"
+                    message: "OTP must be 6 digits"
+                    statusCode: 400
+
+        '401':
+          description: 認證失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingToken:
+                  summary: 缺少 Pre-Auth Token (2FA 流程)
+                  value:
+                    status: "error"
+                    message: "Authorization token is required"
+                    statusCode: 401
+
+                invalidToken:
+                  summary: Token 無效或過期
+                  value:
+                    status: "error"
+                    message: "Invalid or expired token"
+                    statusCode: 401
+
+                incorrectOTP:
+                  summary: OTP 錯誤
+                  value:
+                    status: "error"
+                    message: "Incorrect OTP"
+                    remaining_attempts: 3
+                    statusCode: 401
+
+                incorrectCode:
+                  summary: Code 錯誤
+                  value:
+                    status: "error"
+                    message: "Incorrect verification code"
+                    remaining_attempts: 2
+                    statusCode: 401
+
+                expiredCode:
+                  summary: Code 已過期
+                  value:
+                    status: "error"
+                    message: "Verification code has expired"
+                    statusCode: 401
+
+        '403':
+          description: 權限不足或嘗試次數過多
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                tooManyAttempts:
+                  summary: 嘗試次數過多 (2FA)
+                  value:
+                    status: "error"
+                    message: "Too many failed attempts. Token has been revoked."
+                    statusCode: 403
+
+                codeLocked:
+                  summary: Code 已被鎖定
+                  value:
+                    status: "error"
+                    message: "Verification code has been locked due to too many failed attempts"
+                    statusCode: 403
+
+                invalidScope:
+                  summary: Token scope 不匹配
+                  value:
+                    status: "error"
+                    message: "Invalid token scope for this operation"
+                    statusCode: 403
+
+                tokenRevoked:
+                  summary: Token 已被撤銷
+                  value:
+                    status: "error"
+                    message: "Token has been revoked"
+                    statusCode: 403
+
+        '500':
+          description: 伺服器錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                redisError:
+                  summary: Redis 連線錯誤
+                  value:
+                    status: "error"
+                    message: "Failed to verify token state"
+                    statusCode: 500
+
+                systemError:
+                  summary: 系統錯誤
+                  value:
+                    status: "error"
+                    message: "Internal server error"
+                    statusCode: 500
+
   /PortalLdapLogin:
     post:
       tags:
@@ -1028,6 +1611,166 @@ components:
               type: string
               format: date-time
               example: "2024-12-01T10:30:00Z"
+
+    Verify2FARequest:
+      type: object
+      description: 驗證 2FA OTP 請求 (需要 Pre-Auth Token)
+      required:
+        - otp
+      properties:
+        otp:
+          type: string
+          description: 6 位數字 OTP 驗證碼
+          pattern: '^[0-9]{6}$'
+          minLength: 6
+          maxLength: 6
+          example: "123456"
+
+    VerifyCodeRequest:
+      type: object
+      description: 驗證 Code 請求 (忘記密碼/帳號啟用流程)
+      required:
+        - code
+        - username
+      properties:
+        code:
+          type: string
+          description: 驗證碼 (從郵件或連結取得)
+          minLength: 1
+          example: "abc123def456"
+        username:
+          type: string
+          description: 用戶名稱或郵箱
+          minLength: 1
+          example: "user@example.com"
+
+    Verify2FASuccessResponse:
+      type: object
+      description: 2FA 驗證成功響應 (返回完整 Access Token)
+      required:
+        - status
+        - message
+        - access_token
+        - token_type
+        - expires_in
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+          example: "success"
+        message:
+          type: string
+          description: 成功訊息
+          example: "Authentication successful"
+        access_token:
+          type: string
+          description: |
+            完整的 Access Token (JWT 格式)
+
+            Payload 包含：
+            - sub: 用戶 ID
+            - oldid: 舊 ID (兼容性)
+            - ou: 組織單位 (STUDENT/STAFF/FACULTY)
+            - iat: 簽發時間
+            - exp: 過期時間 (依系統設定，通常 1-24 小時)
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJFMDAwMDEiLCJvbGRpZCI6IkUwMDAwMSIsIm91IjoiU1RVREVOVCIsImlhdCI6MTczMDAwMDAwMCwiZXhwIjoxNzMwMDAzNjAwfQ..."
+        token_type:
+          type: string
+          enum:
+            - Bearer
+          example: "Bearer"
+        expires_in:
+          type: integer
+          description: Token 過期時間 (秒)
+          example: 3600
+        user:
+          type: object
+          description: 用戶基本資訊
+          properties:
+            id:
+              type: string
+              description: 用戶 ID
+              example: "E00001"
+            name:
+              type: string
+              description: 用戶姓名
+              example: "張三"
+            email:
+              type: string
+              format: email
+              description: 郵箱地址
+              example: "e00001@nycu.edu.tw"
+
+    VerifyPasswordResetSuccessResponse:
+      type: object
+      description: 忘記密碼驗證成功響應 (返回 Pre-Auth Token 用於設定新密碼)
+      required:
+        - status
+        - message
+        - reset_token
+        - expires_in
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+          example: "success"
+        message:
+          type: string
+          description: 成功訊息
+          example: "Verification successful. You can now reset your password."
+        reset_token:
+          type: string
+          description: |
+            Pre-Auth Token (JWT 格式) 用於後續設定新密碼
+
+            Payload 包含：
+            - sub: 用戶 ID
+            - scope: "password_reset_verified"
+            - jti: 唯一 token ID
+            - iat: 簽發時間
+            - exp: 過期時間 (3 分鐘)
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJFMDAwMDEiLCJzY29wZSI6InBhc3N3b3JkX3Jlc2V0X3ZlcmlmaWVkIiwianRpIjoiYTFiMmMzZDQiLCJpYXQiOjE3MzAwMDAwMDAsImV4cCI6MTczMDAwMDE4MH0..."
+        expires_in:
+          type: integer
+          description: Token 過期時間 (秒)
+          example: 180
+
+    VerifyActivationSuccessResponse:
+      type: object
+      description: 帳號啟用驗證成功響應 (返回 Pre-Auth Token 用於設定密碼)
+      required:
+        - status
+        - message
+        - reset_token
+        - expires_in
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+          example: "success"
+        message:
+          type: string
+          description: 成功訊息
+          example: "Verification successful. You can now set your password."
+        reset_token:
+          type: string
+          description: |
+            Pre-Auth Token (JWT 格式) 用於設定密碼
+
+            Payload 包含：
+            - sub: 用戶 ID
+            - scope: "account_activation_verified"
+            - jti: 唯一 token ID
+            - iat: 簽發時間
+            - exp: 過期時間 (3 分鐘)
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJFMDAwMDEiLCJzY29wZSI6ImFjY291bnRfYWN0aXZhdGlvbl92ZXJpZmllZCIsImp0aSI6ImExYjJjM2Q0IiwiaWF0IjoxNzMwMDAwMDAwLCJleHAiOjE3MzAwMDAxODB9..."
+        expires_in:
+          type: integer
+          description: Token 過期時間 (秒)
+          example: 180
 
 tags:
   - name: TOTP 認證
