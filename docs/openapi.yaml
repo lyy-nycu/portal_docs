@@ -1,4 +1,4 @@
-openapi: 3.0.3
+openapi: 3.1.0
 info:
   title: Portal Backend API
   description: |
@@ -22,19 +22,16 @@ info:
     - IP 白名單檢查
     - 帳戶鎖定機制
   version: 1.0.0
-  contact:
-    name: Portal Development Team
-    email: portal-dev@nycu.edu.tw
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
 
 servers:
-  - url: https://portal.nycu.edu.tw/api
+  - url: https://portal.nycu.edu.tw/portal
     description: 生產環境
-  - url: https://portal-dev.nycu.edu.tw/api
+  - url: https://portal.test.nycu.edu.tw/portal
     description: 開發環境
-  - url: http://localhost:8000/api
+  - url: http://localhost:8000/portal
     description: 本地開發環境
 
 security:
@@ -386,7 +383,7 @@ paths:
         - 用戶認證
       summary: 用戶登入 (v1)
       description: |
-        使用 LDAP 進行用戶認證，支援雙因素認證流程
+        使用 LDAP 進行用戶認證，並根據帳戶狀態與網路位置決定是否需要雙因素認證 (2FA)
 
         ## 認證流程
         1. 驗證 reCAPTCHA token
@@ -428,12 +425,12 @@ paths:
               properties:
                 id:
                   type: string
-                  description: 用戶帳號 (學號或人事代號)
+                  description: 學號或人事代號
                   example: "E00001"
                   minLength: 1
                 pwd:
                   type: string
-                  description: 用戶密碼
+                  description: 密碼
                   format: password
                   example: "MyP@ssw0rd"
                   minLength: 1
@@ -448,7 +445,7 @@ paths:
 
       responses:
         '200':
-          description: 登入成功或需要雙因素認證
+          description: 登入成功驗證成功
           content:
             application/json:
               schema:
@@ -1479,41 +1476,29 @@ components:
     LoginDirectSuccessResponse:
       type: object
       description: 直接登入成功響應 (無需 2FA)
+      required:
+        - success
+        - message
+        - token
+        - need2FA
       properties:
-        id:
+        success:
+          type: boolean
+          description: 請求是否成功
+          example: true
+        message:
           type: string
-          description: 用戶 ID
-          example: "E00001"
-        name:
-          type: string
-          description: 用戶姓名
-          example: "王小明"
-        dept:
-          type: string
-          description: 部門/系所
-          example: "資訊工程學系"
-        mail:
-          type: string
-          format: email
-          description: 郵箱地址
-          example: "e00001@nycu.edu.tw"
-        idStatus:
-          type: string
-          description: 帳戶狀態 (1=啟用)
-          example: "1"
-        ou:
-          type: string
-          description: 組織單位 (STUDENT/STAFF/FACULTY)
-          example: "STUDENT"
-        '2fa':
-          type: string
-          description: 2FA 狀態
-          enum: ["enable", "disable"]
-          example: "disable"
+          description: 響應訊息
+          example: "Login successful"
         token:
           type: string
           description: JWT 完整登入 token
           example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IkUwMDAwMSIsIm9sZGlkIjoiRTAwMDAxIiwib3UiOiJTVFVERU5UIiwiaWF0IjoxNzMwMDAwMDAwfQ..."
+        need2FA:
+          type: boolean
+          description: 是否需要雙因素認證
+          example: false
+        
 
     PreAuthTokenResponse:
       type: object
