@@ -445,33 +445,30 @@ paths:
 
       responses:
         '200':
-          description: 登入成功驗證成功
+          description: 登入請求處理成功
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: '#/components/schemas/LoginDirectSuccessResponse'
-                  - $ref: '#/components/schemas/PreAuthTokenResponse'
+                $ref: '#/components/schemas/LoginResponse'
               examples:
-                directLogin:
+                authenticated:
                   summary: 直接登入成功 (無需 2FA)
                   value:
-                    id: "E00001"
-                    name: "王小明"
-                    dept: "資訊工程學系"
-                    mail: "e00001@nycu.edu.tw"
-                    idStatus: "1"
-                    ou: "STUDENT"
-                    "2fa": false
-                    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    success: true
+                    data:
+                      auth_status: "authenticated"
+                      access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    error: null
 
-                require2FA:
+                pending_2fa:
                   summary: 需要雙因素認證
                   value:
-                    "2fa": true
-                    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                    methods: ["mobile-app", "email"]
-                    expires_in: 180
+                    success: true
+                    data:
+                      auth_status: "pending_2fa"
+                      pre_auth_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      available_methods: ["email", "mobile-app"]
+                    error: null
 
         '400':
           description: 無效請求 - 缺少必要欄位
@@ -1473,9 +1470,75 @@ components:
           description: 2FA token
           example: "2fa_token_123"
 
+    LoginResponse:
+      type: object
+      description: 統一登入響應格式
+      required:
+        - success
+        - data
+        - error
+      properties:
+        success:
+          type: boolean
+          description: 請求是否成功
+          example: true
+        data:
+          type: object
+          required:
+            - auth_status
+          properties:
+            auth_status:
+              type: string
+              enum: [authenticated, pending_2fa]
+              description: |
+                認證狀態：
+                - authenticated: 認證成功，無需 2FA
+                - pending_2fa: 需要進行雙因素認證
+              example: "authenticated"
+            access_token:
+              type: string
+              description: |
+                完整登入 token (JWT 格式)
+
+                僅在 auth_status = authenticated 時存在
+
+                Payload 包含：
+                - sub: 用戶 ID
+                - ou: 組織單位 (student/employee/alumni...)
+                - iat: 簽發時間
+                - exp: 過期時間
+              example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+            pre_auth_token:
+              type: string
+              description: |
+                Pre-Auth Token (JWT 格式)
+
+                僅在 auth_status = pending_2fa 時存在
+
+                Payload 包含：
+                - sub: 用戶 ID
+                - scope: "2fa_pending"
+                - jti: 唯一 token ID
+                - iat: 簽發時間
+                - exp: 過期時間 (3分鐘)
+              example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+            available_methods:
+              type: array
+              description: 可用的 2FA 驗證方法 (僅在 auth_status = pending_2fa 時存在)
+              items:
+                type: string
+                enum: [email, mobile-app]
+              example: ["email", "mobile-app"]
+        error:
+          type: object
+          nullable: true
+          description: 錯誤資訊 (成功時為 null)
+          example: null
+
     LoginDirectSuccessResponse:
       type: object
-      description: 直接登入成功響應 (無需 2FA)
+      description: 直接登入成功響應 (無需 2FA) - 已廢棄，請使用 LoginResponse
+      deprecated: true
       required:
         - success
         - message
@@ -1498,11 +1561,12 @@ components:
           type: boolean
           description: 是否需要雙因素認證
           example: false
-        
+
 
     PreAuthTokenResponse:
       type: object
-      description: Pre-Auth Token 響應 (需要 2FA 驗證)
+      description: Pre-Auth Token 響應 (需要 2FA 驗證) - 已廢棄，請使用 LoginResponse
+      deprecated: true
       required:
         - 2fa
         - token
