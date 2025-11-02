@@ -471,18 +471,71 @@ paths:
                     error: null
 
         '400':
-          description: 無效請求 - 缺少必要欄位
+          description: 無效請求 - 請求格式錯誤或缺少必要欄位
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                status: "error"
-                message: "Missing required fields: id, pwd, recaptchaToken"
-                statusCode: 400
+              examples:
+                missingFields:
+                  summary: 缺少必要欄位
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "MISSING_REQUIRED_FIELDS"
+                      message: "缺少必要欄位"
+                      details:
+                        missing_fields: ["id", "pwd", "recaptchaToken"]
+
+                invalidFormat:
+                  summary: 請求格式錯誤
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "INVALID_REQUEST_FORMAT"
+                      message: "請求格式錯誤，請檢查 Content-Type 或 JSON 格式"
+
+        '401':
+          description: 認證失敗 - 帳號密碼錯誤、密碼過期或 reCAPTCHA 驗證失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidCredentials:
+                  summary: 帳號或密碼錯誤
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "INVALID_CREDENTIALS"
+                      message: "帳號或密碼錯誤"
+
+                passwordExpired:
+                  summary: 密碼已過期
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "PASSWORD_EXPIRED"
+                      message: "密碼已過期，請重設密碼"
+                      details:
+                        expired_at: "2024-06-01T00:00:00Z"
+                        expired_days_ago: 15
+
+                invalidRecaptcha:
+                  summary: reCAPTCHA 驗證失敗
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "INVALID_RECAPTCHA"
+                      message: "reCAPTCHA 驗證失敗，請重試"
 
         '403':
-          description: 禁止訪問 - 校外無 2FA 或帳戶被鎖定
+          description: 禁止訪問 - 校外需要 2FA 或帳戶已停用
           content:
             application/json:
               schema:
@@ -491,44 +544,40 @@ paths:
                 offCampusNo2FA:
                   summary: 校外登入但未設定 2FA
                   value:
-                    status: "error"
-                    message: "Please use VPN or configure two-factor authentication to login from off-campus"
-                    statusCode: 403
+                    success: false
+                    data: null
+                    error:
+                      code: "OFF_CAMPUS_2FA_REQUIRED"
+                      message: "校外登入需使用 VPN 或設定雙因素認證"
+                      
+                accountDisabled:
+                  summary: 帳戶已停用
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "ACCOUNT_DISABLED"
+                      message: "帳戶已停用"
 
-        '404':
-          description: 帳戶不存在、未啟用或密碼錯誤
+        '429':
+          description: 速率限制 - 登入嘗試次數過多
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
               examples:
-                invalidCredentials:
-                  summary: 帳號密碼錯誤
-                  value:
-                    status: "error"
-                    message: "Invalid credentials or account not activated"
-                    statusCode: 404
-
-                accountDisabled:
-                  summary: 帳戶已停用
-                  value:
-                    status: "error"
-                    message: "Account not activated"
-                    statusCode: 404
-
-                passwordExpired:
-                  summary: 密碼已過期
-                  value:
-                    status: "error"
-                    message: "Password expired, please change password"
-                    statusCode: 404
-
                 tooManyAttempts:
                   summary: 登入嘗試次數過多
                   value:
-                    status: "error"
-                    message: "Too many failed attempts, please try again later"
-                    statusCode: 404
+                    success: false
+                    data: null
+                    error:
+                      code: "TOO_MANY_ATTEMPTS"
+                      message: "登入嘗試次數過多，請稍後再試"
+                      details:
+                        lockout_seconds: 300
+                        lockout_until: 1730000900
+                        retry_after: 300
 
         '500':
           description: 伺服器錯誤 - LDAP 連線失敗或系統錯誤
@@ -540,9 +589,20 @@ paths:
                 systemError:
                   summary: 系統錯誤
                   value:
-                    status: "error"
-                    message: "System error, please try again later"
-                    statusCode: 500
+                    success: false
+                    data: null
+                    error:
+                      code: "INTERNAL_SERVER_ERROR"
+                      message: "系統錯誤，請稍後再試"
+
+                ldapError:
+                  summary: LDAP 連線失敗
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "LDAP_CONNECTION_FAILED"
+                      message: "認證服務暫時無法使用，請稍後再試"
 
   /api/v1/auth/send:
     post:
@@ -1407,18 +1467,40 @@ components:
   schemas:
     ErrorResponse:
       type: object
+      description: 統一錯誤響應格式
+      required:
+        - success
+        - data
+        - error
       properties:
-        status:
+        success:
           type: boolean
+          enum: [false]
+          description: 請求是否成功（錯誤時固定為 false）
           example: false
-        message:
-          type: string
-          description: 錯誤訊息
-          example: "Invalid request"
-        statusCode:
-          type: integer
-          description: HTTP 狀態碼
-          example: 400
+        data:
+          type: object
+          nullable: true
+          description: 數據（錯誤時為 null）
+          example: null
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              description: 錯誤代碼（大寫蛇形命名，用於程序化處理）
+              example: "INVALID_CREDENTIALS"
+            message:
+              type: string
+              description: 可讀的錯誤訊息
+              example: "帳號或密碼錯誤"
+            details:
+              type: object
+              description: 額外的錯誤上下文資訊（可選）
+              additionalProperties: true
 
     LoginSuccessResponse:
       type: object
@@ -1489,11 +1571,12 @@ components:
           properties:
             auth_status:
               type: string
-              enum: [authenticated, pending_2fa]
+              enum: [authenticated, pending_2fa, password_expired]
               description: |
                 認證狀態：
                 - authenticated: 認證成功，無需 2FA
                 - pending_2fa: 需要進行雙因素認證
+                - password_expired: 密碼已過期，需要修改密碼
               example: "authenticated"
             access_token:
               type: string
