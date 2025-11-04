@@ -457,7 +457,7 @@ paths:
                     success: true
                     data:
                       auth_status: "authenticated"
-                      access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
                     error: null
 
                 pending_2fa:
@@ -466,7 +466,7 @@ paths:
                     success: true
                     data:
                       auth_status: "pending_2fa"
-                      pre_auth_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
                       available_methods: ["email", "mobile-app"]
                     error: null
 
@@ -604,11 +604,389 @@ paths:
                       code: "LDAP_CONNECTION_FAILED"
                       message: "認證服務暫時無法使用，請稍後再試"
 
-  /api/v1/auth/send:
+  /api/v1/auth/passwd/forgot:
     post:
       tags:
         - 用戶認證
-      summary: 發送驗證訊息
+      summary: 忘記密碼請求
+      description: |
+        用戶忘記密碼時，請求重設密碼的 Request Token
+
+        ## 核心職責
+        1. 驗證用戶身份（用戶 ID + Email）
+        2. 驗證 reCAPTCHA
+        3. 簽發 Request Token (scope: `forgot_password`)
+        4. 返回 token 給前端，用於後續調用 `/api/v1/auth/two-factor/send`
+
+        ## 流程說明
+        1. 用戶提交用戶 ID、Email 和 reCAPTCHA token
+        2. 系統驗證用戶 ID 和 Email 是否匹配
+        3. 驗證 reCAPTCHA
+        4. 簽發 Request Token，有效期 10 分鐘
+        5. 前端使用此 token 調用 `/api/v1/auth/two-factor/send` 發送驗證碼
+        6. 用戶驗證後可重設密碼
+
+        ## 安全機制
+        - reCAPTCHA 驗證防止機器人攻擊
+        - 用戶 ID + Email 雙重驗證
+        - Token 有效期限制（10 分鐘）
+        - 速率限制（防止同一用戶頻繁請求）
+
+      security: []
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - id
+                - email
+                - recaptchaToken
+              properties:
+                id:
+                  type: string
+                  description: 用戶 ID（學號或人事代號）
+                  example: "E00001"
+                  minLength: 1
+                email:
+                  type: string
+                  format: email
+                  description: 用戶註冊的 Email 地址
+                  example: "e00001@nycu.edu.tw"
+                recaptchaToken:
+                  type: string
+                  description: Google reCAPTCHA v3 驗證 token
+                  example: "03AGdBq24..."
+
+      responses:
+        '200':
+          description: Request Token 簽發成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                  - error
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    required:
+                      - auth_status
+                      - token
+                      - available_methods
+                    properties:
+                      auth_status:
+                        type: string
+                        enum: [request_token_issued]
+                        description: 認證狀態
+                        example: "request_token_issued"
+                      token:
+                        type: string
+                        description: |
+                          Request Token (JWT 格式)
+
+                          Payload 包含：
+                          - sub: 用戶 ID
+                          - email: 用戶 Email
+                          - scope: "forgot_password"
+                          - jti: 唯一 token ID
+                          - iat: 簽發時間
+                          - exp: 過期時間 (10分鐘)
+                        example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      available_methods:
+                        type: array
+                        description: 可用的 2FA 驗證方法
+                        items:
+                          type: string
+                          enum: [email, mobile-app]
+                        example: ["email", "mobile-app"]
+                  error:
+                    type: object
+                    nullable: true
+                    example: null
+
+        '400':
+          description: 無效請求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingFields:
+                  summary: 缺少必要欄位
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "MISSING_REQUIRED_FIELDS"
+                      message: "缺少必要欄位: id, email, recaptchaToken"
+
+                invalidEmailFormat:
+                  summary: Email 格式錯誤
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "INVALID_EMAIL_FORMAT"
+                      message: "Email 格式錯誤"
+
+        '401':
+          description: 認證失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                userNotFound:
+                  summary: 用戶不存在或 Email 不匹配
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "USER_NOT_FOUND"
+                      message: "用戶不存在或 Email 不匹配"
+
+                invalidRecaptcha:
+                  summary: reCAPTCHA 驗證失敗
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "INVALID_RECAPTCHA"
+                      message: "reCAPTCHA 驗證失敗"
+
+        '429':
+          description: 速率限制
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                tooManyRequests:
+                  summary: 請求過於頻繁
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "TOO_MANY_REQUESTS"
+                      message: "請求過於頻繁，請稍後再試"
+                      details:
+                        retry_after: 60
+
+        '500':
+          description: 伺服器錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/auth/activation/request:
+    post:
+      tags:
+        - 用戶認證
+      summary: 帳號啟用
+      description: |
+        user 請求啟用帳號的 Request Token
+
+        ## 核心職責
+        1. 驗證用戶身份（用戶 ID + Email）
+        2. 檢查帳號是否已啟用
+        3. 驗證 reCAPTCHA
+        4. 簽發 Request Token (scope: `activate_account`)
+        5. 返回 token 給前端，用於後續調用 `/api/v1/auth/two-factor/send`
+
+        ## 流程說明
+        1. 用戶提交用戶 ID、Email 和 reCAPTCHA token
+        2. 系統檢查帳號是否已激活（已激活則拒絕）
+        3. 驗證用戶 ID 和 Email 是否匹配
+        4. 驗證 reCAPTCHA
+        5. 簽發 Request Token，有效期 10 分鐘
+        6. 前端使用此 token 調用 `/api/v1/auth/two-factor/send` 發送驗證碼
+        7. 用戶驗證後激活帳號並設定密碼
+
+        ## 安全機制
+        - reCAPTCHA 驗證防止機器人攻擊
+        - 用戶 ID + Email 雙重驗證
+        - 帳號狀態檢查（防止重複激活）
+        - Token 有效期限制（10 分鐘）
+        - 速率限制
+
+      security: []
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - id
+                - email
+                - recaptchaToken
+              properties:
+                id:
+                  type: string
+                  description: 用戶 ID（學號或人事代號）
+                  example: "E00001"
+                  minLength: 1
+                email:
+                  type: string
+                  format: email
+                  description: 用戶註冊的 Email 地址
+                  example: "e00001@nycu.edu.tw"
+                recaptchaToken:
+                  type: string
+                  description: Google reCAPTCHA v3 驗證 token
+                  example: "03AGdBq24..."
+
+      responses:
+        '200':
+          description: Request Token 簽發成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                  - error
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    required:
+                      - auth_status
+                      - token
+                      - available_methods
+                    properties:
+                      auth_status:
+                        type: string
+                        enum: [request_token_issued]
+                        description: 認證狀態
+                        example: "request_token_issued"
+                      token:
+                        type: string
+                        description: |
+                          Request Token (JWT 格式)
+
+                          Payload 包含：
+                          - sub: 用戶 ID
+                          - email: 用戶 Email
+                          - scope: "activate_account"
+                          - jti: 唯一 token ID
+                          - iat: 簽發時間
+                          - exp: 過期時間 (10分鐘)
+                        example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      available_methods:
+                        type: array
+                        description: 可用的 2FA 驗證方法
+                        items:
+                          type: string
+                          enum: [email, mobile-app]
+                        example: ["email", "mobile-app"]
+                  error:
+                    type: object
+                    nullable: true
+                    example: null
+
+        '400':
+          description: 無效請求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingFields:
+                  summary: 缺少必要欄位
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "MISSING_REQUIRED_FIELDS"
+                      message: "缺少必要欄位: id, email, recaptchaToken"
+
+                invalidEmailFormat:
+                  summary: Email 格式錯誤
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "INVALID_EMAIL_FORMAT"
+                      message: "Email 格式錯誤"
+
+                accountAlreadyActivated:
+                  summary: 帳號已激活
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "ACCOUNT_ALREADY_ACTIVATED"
+                      message: "帳號已激活，請直接登入"
+
+        '401':
+          description: 認證失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                userNotFound:
+                  summary: 用戶不存在或 Email 不匹配
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "USER_NOT_FOUND"
+                      message: "用戶不存在或 Email 不匹配"
+
+                invalidRecaptcha:
+                  summary: reCAPTCHA 驗證失敗
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "INVALID_RECAPTCHA"
+                      message: "reCAPTCHA 驗證失敗"
+
+        '429':
+          description: 速率限制
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                tooManyRequests:
+                  summary: 請求過於頻繁
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "TOO_MANY_REQUESTS"
+                      message: "請求過於頻繁，請稍後再試"
+                      details:
+                        retry_after: 60
+
+        '500':
+          description: 伺服器錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/auth/two-factor/send:
+    post:
+      tags:
+        - 用戶認證
+      summary: 發送 2FA 驗證碼/連結
       description: |
         根據 Token 類型發送對應的驗證碼或驗證連結
 
@@ -632,17 +1010,17 @@ paths:
         ### 2. Request Token (忘記密碼/帳號啟用)
         - **使用場景**: 用戶請求密碼重設或帳號啟用
         - **Token 來源**:
-          - `POST /api/v1/auth/password-reset/request`
-          - `POST /api/v1/auth/account-activation/request`
+          - `POST /api/v1/auth/activation/request`
+          - `POST /api/v1/auth/passwd/forgot`
         - **Token 特徵**:
-          - `scope: "password_reset"` 或 `"account_activation"`
+          - `scope: "forgot_password"` 或 `"activate_account"`
           - `sub: "E00001"` (用戶 ID)
           - `email: "e00001@nycu.edu.tw"` (可選，發送目標)
           - 有效期: 10 分鐘
         - **發送內容**: OTP 驗證碼或重設連結
         - **速率限制**: **必須實施 30 秒冷卻期**，防止郵件/簡訊濫發 (DoS)
 
-        ## 用戶識別方式
+        ## user 識別方式
         - **用戶資訊來源**: 從 Token 的 `sub` (subject) 欄位取得用戶 ID
         - **安全保證**: 由於 `sub` 由伺服器簽名，用戶無法偽造他人身份
         - **發送目標**:
@@ -683,7 +1061,7 @@ paths:
           請求 body 通常為空，或僅包含 `method` 欄位用於選擇發送方式。
 
           **注意**: 用戶身份資訊（用戶 ID、email）從 Token 的 `sub` 欄位取得，
-          客戶端不應該也不需要在 body 中提供用戶資訊。
+          client 不應該也不需要在 body 中提供用戶資訊。
         content:
           application/json:
             schema:
@@ -918,7 +1296,7 @@ paths:
                     message: "Internal server error"
                     statusCode: 500
 
-  /api/v1/auth/verify:
+  /api/v1/auth/two-factor/verification:
     post:
       tags:
         - 用戶認證
