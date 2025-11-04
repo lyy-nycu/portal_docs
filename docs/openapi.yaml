@@ -39,6 +39,257 @@ security:
   - ApiKeyAuth: []
 
 paths:
+  /sendTOTP:
+    post:
+      tags:
+        - TOTP 認證
+      summary: 發送 TOTP 驗證碼
+      description: |
+        發送 TOTP 驗證碼到指定郵箱
+        
+        ## 限制條件
+        - 最多重送 3 次，超過後鎖定 15 分鐘
+        - 每次重送間隔 10 秒冷卻期
+        - 需要 reCAPTCHA 驗證
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - email
+                - token
+                - recaptchaToken
+              properties:
+                email:
+                  type: string
+                  format: email
+                  description: 用戶郵箱地址
+                  example: "user@nycu.edu.tw"
+                token:
+                  type: string
+                  description: 臨時 token
+                  example: "abc123def456"
+                recaptchaToken:
+                  type: string
+                  description: reCAPTCHA 驗證 token
+                  example: "03AFcWeA..."
+      responses:
+        '200':
+          description: 成功發送 TOTP
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "TOTP has been sent"
+                  sent_time:
+                    type: integer
+                    description: 發送時間戳
+                    example: 1748703433
+                  retry_after:
+                    type: integer
+                    description: 下次可重送剩餘秒數
+                    example: 60
+                  resend_count:
+                    type: integer
+                    description: 當前重送次數
+                    example: 1
+                  max_resend_attempts:
+                    type: integer
+                    description: 最大重送次數
+                    example: 3
+                  token:
+                    type: string
+                    description: 新的臨時 token
+                    example: "new_token_123"
+        '400':
+          description: 無效請求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 無效或過期的 token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 重送次數過多，帳戶被鎖定
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: boolean
+                    example: false
+                  message:
+                    type: string
+                    example: "Too many resend attempts, please try again later"
+                  lockout_seconds:
+                    type: integer
+                    description: 鎖定剩餘秒數
+                    example: 720
+                  resend_count:
+                    type: integer
+                    example: 3
+                  max_resend_attempts:
+                    type: integer
+                    example: 3
+        '422':
+          description: 輸入驗證失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: 請求過於頻繁
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 伺服器錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /verifyTOTP:
+    post:
+      tags:
+        - TOTP 認證
+      summary: 驗證 TOTP 代碼
+      description: |
+        驗證用戶輸入的 TOTP 代碼
+        
+        ## 限制條件
+        - 最多錯誤 3 次，超過後鎖定 15 分鐘
+        - 需要 reCAPTCHA 驗證
+        - TOTP 代碼有效期 5 分鐘
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - email
+                - totp_code
+                - token
+                - recaptchaToken
+              properties:
+                email:
+                  type: string
+                  format: email
+                  description: 用戶郵箱地址
+                  example: "user@nycu.edu.tw"
+                totp_code:
+                  type: string
+                  description: 6 位數 TOTP 驗證碼
+                  pattern: '^[0-9]{6}$'
+                  example: "123456"
+                token:
+                  type: string
+                  description: 臨時 token
+                  example: "abc123def456"
+                recaptchaToken:
+                  type: string
+                  description: reCAPTCHA 驗證 token
+                  example: "03AFcWeA..."
+      responses:
+        '200':
+          description: 驗證成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "verify success"
+                  token:
+                    type: string
+                    description: 驗證成功後的 token
+                    example: "verified_token_123"
+        '400':
+          description: 無效請求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 驗證失敗
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: boolean
+                    example: false
+                  message:
+                    type: string
+                    example: "totp verify failed"
+                  fail_count:
+                    type: integer
+                    description: 當前失敗次數
+                    example: 2
+                  token:
+                    type: string
+                    description: 新的臨時 token
+                    example: "new_token_123"
+                  max_attempts:
+                    type: integer
+                    description: 最大嘗試次數
+                    example: 3
+        '403':
+          description: 帳戶被鎖定
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: boolean
+                    example: false
+                  message:
+                    type: string
+                    example: "Too many requests, please try again later"
+                  lockout_seconds:
+                    type: integer
+                    description: 鎖定剩餘秒數
+                    example: 720
+        '422':
+          description: 輸入驗證失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: 請求過於頻繁
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 伺服器錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /resetPassword:
     post:
       tags:
@@ -1049,102 +1300,103 @@ paths:
     post:
       tags:
         - 用戶認證
-      summary: 驗證 OTP/Code
+      summary: 驗證 2FA（Magic Link 或 OTP）
       description: |
-        驗證用戶提交的 OTP 驗證碼或 Code，完成認證流程
+        驗證用戶提交的 2FA 驗證，完成認證流程
 
         ## 核心職責
-        根據不同的認證流程，驗證用戶提交的驗證碼：
-        - **OTP 驗證**: 驗證 6 位數字的 OTP 碼
-        - **Code 驗證**: 驗證 Magic Link 或重設連結中的 Code
+        根據不同的認證流程，驗證用戶提交的驗證方式：
+        - **Magic Link 驗證**: 驗證從郵件連結取得的 Magic Token
+        - **OTP 驗證**: 驗證 6 位數字的 OTP 碼（來自 TOTP App e.g Google Authenticator）
 
         ## 適用情境與認證流程
 
         ### 1. Pre-Auth Token (登入 2FA)
-        - **使用場景**: 用戶完成帳號密碼驗證後，需要驗證 2FA OTP
+        - **使用場景**: 用戶完成帳號密碼驗證後，需要驗證 2FA
         - **Token 來源**: `POST /api/v1/auth/login` 返回的 Pre-Auth Token
         - **請求方式**:
           - Header: `Authorization: Bearer <Pre-Auth Token>`
-          - Body: `{"otp": "123456"}`
+          - Body: `{"magic_token": "..."}` 或 `{"otp": "123456"}`
         - **Token 特徵**:
           - `scope: "2fa_pending"`
           - `sub: "E00001"` (用戶 ID)
           - 有效期: 3 分鐘
-        - **驗證成功**: 銷毀 Pre-Auth Token，簽發完整的 Access Token
-        - **安全機制**:
-          - 最大嘗試次數限制 (防暴力破解)
-          - Token 綁定 IP/User-Agent (可選)
-
-        ### 2. Request Token (忘記密碼/帳號啟用)
-        - **使用場景**: 用戶驗證忘記密碼或帳號啟用流程中的驗證碼
-        - **Token 來源**:
-          - `POST /api/v1/auth/password-reset/request`
-          - `POST /api/v1/auth/account-activation/request`
-        - **請求方式**:
-          - Header: 無 (匿名請求)
-          - Body: `{"code": "<CodeValue>", "username": "user@example.com"}`
         - **驗證成功**:
-          - 忘記密碼/帳號啟用: 簽發 Pre-Auth Token (scope: `password_reset_verified`) 用於後續設定新密碼
-        - **安全機制**:
-          - Code 單次有效 (驗證後立即失效)
-          - 最大嘗試次數限制
+          - 撤銷 Pre-Auth Token (加入黑名單)
+          - 簽發 Access Token (scope: `authenticated`, 有效期 1 小時)
 
-        ## 驗證流程
+        ### 2. Request Token - 忘記密碼
+        - **使用場景**: 用戶驗證忘記密碼流程中的 2FA
+        - **Token 來源**: `POST /api/v1/auth/passwd/forgot`
+        - **請求方式**:
+          - Header: `Authorization: Bearer <Request Token>`
+          - Body: `{"magic_token": "..."}` 或 `{"otp": "123456"}`
+        - **Token 特徵**:
+          - `scope: "forgot_password"`
+          - `sub: "E00001"` (用戶 ID)
+          - 有效期: 10 分鐘
+        - **驗證成功**:
+          - 撤銷 Request Token (加入黑名單)
+          - 簽發 Reset Password Token (scope: `reset_password`, 有效期 15 分鐘)
 
-        ### 2FA 流程 (Pre-Auth Token)
-        1. 從 Authorization Header 解析並驗證 Pre-Auth Token
-        2. 檢查 Token 簽名、有效期、scope
-        3. 從 Redis 檢查嘗試次數 (key: `2fa_attempts:{jti}`)
-        4. 驗證用戶提交的 OTP
-        5. 成功: 銷毀 Pre-Auth Token，簽發 Access Token
-        6. 失敗: 嘗試次數 +1，返回錯誤
+        ### 3. Request Token - 帳號啟用
+        - **使用場景**: 用戶驗證帳號啟用流程中的 2FA
+        - **Token 來源**: `POST /api/v1/auth/activation/request`
+        - **請求方式**:
+          - Header: `Authorization: Bearer <Request Token>`
+          - Body: `{"magic_token": "..."}` 或 `{"otp": "123456"}`
+        - **Token 特徵**:
+          - `scope: "activate_account"`
+          - `sub: "E00001"` (用戶 ID)
+          - 有效期: 10 分鐘
+        - **驗證成功**:
+          - 啟用帳號 (LDAP)
+          - 撤銷 Request Token (加入黑名單)
+          - 簽發 Set Password Token (scope: `set_password`, 有效期 15 分鐘)
 
-        ### 忘密/啟用流程 (Code)
-        1. 從 Body 取得 Code 和 username
-        2. 從 Redis 查詢 Code 對應的狀態 (key: `reset_code:{code}`)
-        3. 驗證 Code 有效性、過期時間、使用次數
-        4. 驗證 username 與 Code 綁定的用戶是否一致
-        5. 成功: 銷毀 Code，簽發新 Token 或執行相應操作
-        6. 失敗: 嘗試次數 +1，返回錯誤
+        ## 驗證方式說明
 
-        ## 嘗試次數限制
-        - **最大嘗試次數**: 3 次
-        - **超過限制**: 鎖定 Token/Code，返回 403 Forbidden
-        - **計數器重置**: Token/Code 過期時自動清除
+        ### Magic Link 驗證
+        1. 用戶點擊郵件中的連結（前端從 URL 取得 magic_token）
+        2. 前端攜帶原 Token（Pre-Auth 或 Request）和 magic_token 調用此 API
+        3. 後端從 Redis 驗證 magic_token 並檢查與原 Token 的 JTI 是否匹配
+        4. 驗證成功後刪除 Redis 中的 magic_token（單次有效）
 
-        ## Token 過期時間 (與 /api/v1/auth/send 一致)
-        - **Pre-Auth Token**: 3 分鐘 (180 秒)
-        - **Request Token**: 10 分鐘 (600 秒)
-        
+        ### OTP 驗證
+        1. 用戶從 TOTP App（如 Google Authenticator）取得 6 位數 OTP
+        2. 前端攜帶原 Token（Pre-Auth 或 Request）和 OTP 調用此 API
+        3. 後端使用 TOTP 算法驗證 OTP 是否正確
+        4. OTP 有時間窗口限制（通常 30 秒）
+
+        ## 安全機制
+        - Token 驗證後立即撤銷（加入 Redis 黑名單）
+        - Magic Link 單次有效（驗證後從 Redis 刪除）
+        - JTI 匹配檢查（防止 Token 替換攻擊）
+        - TOTP 時間窗口驗證
 
       security:
         - BearerAuth: []
 
       requestBody:
         required: true
+        description: |
+          根據驗證方式選擇提交 magic_token 或 otp，兩者二選一
         content:
           application/json:
             schema:
               oneOf:
+                - $ref: '#/components/schemas/VerifyMagicLinkRequest'
                 - $ref: '#/components/schemas/Verify2FARequest'
-                - $ref: '#/components/schemas/VerifyCodeRequest'
             examples:
-              verify2FA:
-                summary: 驗證 2FA OTP (登入流程)
+              verifyMagicLink:
+                summary: 驗證 Magic Link Token
+                value:
+                  magic_token: "a1b2c3d4e5f6g7h8i9j0"
+
+              verifyOTP:
+                summary: 驗證 TOTP OTP
                 value:
                   otp: "123456"
-
-              verifyPasswordReset:
-                summary: 驗證忘記密碼 Code
-                value:
-                  code: "abc123def456"
-                  username: "user@example.com"
-
-              verifyAccountActivation:
-                summary: 驗證帳號啟用 Code
-                value:
-                  code: "xyz789uvw012"
-                  username: "newuser@example.com"
 
       responses:
         '200':
@@ -1152,39 +1404,60 @@ paths:
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: '#/components/schemas/Verify2FASuccessResponse'
-                  - $ref: '#/components/schemas/VerifyPasswordResetSuccessResponse'
-                  - $ref: '#/components/schemas/VerifyActivationSuccessResponse'
+                type: object
+                required:
+                  - success
+                  - data
+                  - error
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    description: 根據不同的 scope 返回不同的 token
+                  error:
+                    type: object
+                    nullable: true
+                    example: null
               examples:
                 verify2FASuccess:
-                  summary: 2FA 驗證成功 - 返回 Access Token
+                  summary: Pre-Auth Token 驗證成功 - 返回 Access Token
+                  description: scope=2fa_pending 驗證成功後返回完整的 Access Token
                   value:
-                    status: "success"
-                    message: "Authentication successful"
-                    access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                    token_type: "Bearer"
-                    expires_in: 3600
-                    user:
-                      id: "E00001"
-                      name: "張三"
-                      email: "e00001@nycu.edu.tw"
+                    success: true
+                    data:
+                      message: "2FA verification successful"
+                      access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      token_type: "Bearer"
+                      expires_in: 3600
+                    error: null
 
                 verifyPasswordResetSuccess:
-                  summary: 忘記密碼驗證成功 - 返回 Pre-Auth Token
+                  summary: 忘記密碼驗證成功 - 返回 Reset Password Token
+                  description: scope=forgot_password 驗證成功後返回 reset_password_token
                   value:
-                    status: "success"
-                    message: "Verification successful. You can now reset your password."
-                    reset_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                    expires_in: 180
+                    success: true
+                    data:
+                      message: "Password reset verification successful"
+                      reset_password_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      token_type: "Bearer"
+                      expires_in: 900
+                      next_step: "Use this token to reset your password"
+                    error: null
 
                 verifyActivationSuccess:
-                  summary: 帳號啟用驗證成功
+                  summary: 帳號啟用驗證成功 - 返回 Set Password Token
+                  description: scope=activate_account 驗證成功後啟用帳號並返回 set_password_token
                   value:
-                    status: "success"
-                    message: "Verification successful. You can now set your password."
-                    reset_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                    expires_in: 180
+                    success: true
+                    data:
+                      message: "Account activation successful"
+                      set_password_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      token_type: "Bearer"
+                      expires_in: 900
+                      next_step: "Use this token to set your password"
+                    error: null
 
         '400':
           description: 請求格式錯誤
@@ -1377,6 +1650,68 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: 帳戶不存在或未啟用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: 請求過於頻繁
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /TwofaLogin:
+    post:
+      tags:
+        - 雙因素認證
+      summary: 雙因素認證登入
+      description: |
+        完成雙因素認證流程
+        
+        ## 流程
+        1. 驗證 TOTP 代碼
+        2. 檢查設備指紋
+        3. 返回完整的用戶資訊和 token
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - token
+                - totp_code
+                - recaptchaToken
+              properties:
+                token:
+                  type: string
+                  description: 2FA token
+                  example: "2fa_token_123"
+                totp_code:
+                  type: string
+                  description: TOTP 驗證碼
+                  pattern: '^[0-9]{6}$'
+                  example: "123456"
+                recaptchaToken:
+                  type: string
+                  description: reCAPTCHA 驗證 token
+                  example: "03AFcWeA..."
+      responses:
+        '200':
+          description: 2FA 驗證成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginSuccessResponse'
+        '400':
+          description: 無效請求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 驗證失敗
           content:
             application/json:
               schema:
@@ -1809,6 +2144,19 @@ components:
               format: date-time
               example: "2024-12-01T10:30:00Z"
 
+    VerifyMagicLinkRequest:
+      type: object
+      description: 驗證 Magic Link Token 請求
+      required:
+        - magic_token
+      properties:
+        magic_token:
+          type: string
+          description: 從郵件連結中取得的 Magic Token (20 字符隨機字串)
+          minLength: 20
+          maxLength: 20
+          example: "a1b2c3d4e5f6g7h8i9j0"
+
     Verify2FARequest:
       type: object
       description: 驗證 2FA OTP 請求 (需要 Pre-Auth Token)
@@ -1970,8 +2318,12 @@ components:
           example: 180
 
 tags:
+  - name: TOTP 認證
+    description: 雙因素認證相關 API
   - name: 用戶認證
     description: 用戶登入和認證相關 API
+  - name: 雙因素認證
+    description: 2FA 相關 API
   - name: 密碼管理
     description: 密碼重設和管理相關 API
   - name: 用戶資訊
