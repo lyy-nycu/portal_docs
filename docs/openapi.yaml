@@ -1970,8 +1970,6 @@ components:
           example: 180
 
 tags:
-  - name: TOTP 認證
-    description: 雙因素認證相關 API
   - name: 用戶認證
     description: 用戶登入和認證相關 API
   - name: 密碼管理
