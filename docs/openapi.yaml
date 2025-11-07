@@ -744,14 +744,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
               examples:
-                userNotFound:
-                  summary: 用戶不存在或 Email 不匹配
+                emailMismatch:
+                  summary: Email 不匹配
                   value:
                     success: false
                     data: null
                     error:
-                      code: "USER_NOT_FOUND"
-                      message: "用戶不存在或 Email 不匹配"
+                      code: "EMAIL_MISMATCH"
+                      message: "用戶 ID 與 Email 不匹配"
 
                 invalidRecaptcha:
                   summary: reCAPTCHA 驗證失敗
@@ -761,6 +761,22 @@ paths:
                     error:
                       code: "INVALID_RECAPTCHA"
                       message: "reCAPTCHA 驗證失敗"
+
+        '403':
+          description: 禁止訪問
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                accountNotEligible:
+                  summary: 帳號不符合重設密碼條件
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "ACCOUNT_NOT_ELIGIBLE"
+                      message: "帳號已停用或不符合重設密碼條件"
 
         '429':
           description: 速率限制
@@ -791,9 +807,9 @@ paths:
     post:
       tags:
         - 用戶認證
-      summary: 帳號啟用
+      summary: 帳號啟用請求
       description: |
-        user 請求啟用帳號的 Request Token
+        用戶請求啟用帳號的 Request Token
 
         ## 核心職責
         1. 驗證用戶身份（用戶 ID + Email）
@@ -870,9 +886,9 @@ paths:
                     properties:
                       auth_status:
                         type: string
-                        enum: [request_token_issued]
+                        enum: [pending_activation]
                         description: 認證狀態
-                        example: "request_token_issued"
+                        example: "pending_activation"
                       token:
                         type: string
                         description: |
@@ -923,15 +939,6 @@ paths:
                       code: "INVALID_EMAIL_FORMAT"
                       message: "Email 格式錯誤"
 
-                accountAlreadyActivated:
-                  summary: 帳號已激活
-                  value:
-                    success: false
-                    data: null
-                    error:
-                      code: "ACCOUNT_ALREADY_ACTIVATED"
-                      message: "帳號已激活，請直接登入"
-
         '401':
           description: 認證失敗
           content:
@@ -939,14 +946,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
               examples:
-                userNotFound:
-                  summary: 用戶不存在或 Email 不匹配
+                emailMismatch:
+                  summary: Email 不匹配
                   value:
                     success: false
                     data: null
                     error:
-                      code: "USER_NOT_FOUND"
-                      message: "用戶不存在或 Email 不匹配"
+                      code: "EMAIL_MISMATCH"
+                      message: "用戶 ID 與 Email 不匹配"
 
                 invalidRecaptcha:
                   summary: reCAPTCHA 驗證失敗
@@ -956,6 +963,22 @@ paths:
                     error:
                       code: "INVALID_RECAPTCHA"
                       message: "reCAPTCHA 驗證失敗"
+
+        '403':
+          description: 禁止訪問
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                accountAlreadyEnabled:
+                  summary: 帳號已啟用
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "ACCOUNT_ALREADY_ENABLED"
+                      message: "帳號已啟用，無需重複啟用"
 
         '429':
           description: 速率限制
@@ -1443,6 +1466,7 @@ paths:
                       reset_password_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
                       token_type: "Bearer"
                       expires_in: 900
+                      scope: "reset_password"
                       next_step: "Use this token to reset your password"
                     error: null
 
@@ -1456,6 +1480,7 @@ paths:
                       set_password_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
                       token_type: "Bearer"
                       expires_in: 900
+                      scope: "set_password"
                       next_step: "Use this token to set your password"
                     error: null
 
@@ -1586,6 +1611,329 @@ paths:
                     status: "error"
                     message: "Internal server error"
                     statusCode: 500
+
+  /api/v1/auth/magic-link/verify:
+    post:
+      tags:
+        - 用戶認證
+      summary: 驗證 Magic Link（一鍵驗證）
+      description: |
+        驗證 Magic Link 並返回對應的 token（Access Token / Reset Password Token / Set Password Token）
+
+        ## 核心職責
+        驗證從郵件連結取得的 Magic Token，根據不同的 scope 返回對應的 token：
+        - **2fa_pending**: 返回 Access Token（登入完成）
+        - **forgot_password**: 返回 Reset Password Token（用於重設密碼）
+        - **activate_account**: 啟用帳號並返回 Set Password Token（用於設定密碼）
+
+        ## 適用情境
+
+        ### 1. 登入 2FA（scope: 2fa_pending）
+        - 用戶點擊登入驗證郵件中的連結
+        - 前端從 URL 取得 magic_token
+        - 調用此 API 驗證 token
+        - 驗證成功後返回 Access Token（完成登入）
+
+        ### 2. 忘記密碼（scope: forgot_password）
+        - 用戶點擊密碼重設郵件中的連結
+        - 前端從 URL 取得 magic_token
+        - 調用此 API 驗證 token
+        - 驗證成功後返回 Reset Password Token（用於調用 /passwd/reset）
+
+        ### 3. 帳號啟用（scope: activate_account）
+        - 用戶點擊帳號啟用郵件中的連結
+        - 前端從 URL 取得 magic_token
+        - 調用此 API 驗證 token
+        - 驗證成功後啟用帳號並返回 Set Password Token（用於設定密碼）
+
+        ## 安全機制
+        - Magic Link 單次有效（驗證後立即從 Redis 刪除）
+        - Token 有效期限制（5 分鐘）
+        - 原 Pre-Auth/Request Token 在驗證成功後撤銷（加入黑名單）
+
+      security: []
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - token
+              properties:
+                token:
+                  type: string
+                  description: 從郵件連結中取得的 Magic Token
+                  example: "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6a7b8c9d0"
+
+      responses:
+        '200':
+          description: 驗證成功，返回對應的 token
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                  - error
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    description: 根據不同的 scope 返回不同的 token
+                  error:
+                    type: object
+                    nullable: true
+                    example: null
+              examples:
+                loginSuccess:
+                  summary: 登入 2FA 驗證成功（scope=2fa_pending）
+                  description: 返回 Access Token，用戶完成登入
+                  value:
+                    success: true
+                    data:
+                      message: "2FA verification successful"
+                      access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      token_type: "Bearer"
+                      expires_in: 3600
+                      scope: "authenticated"
+                    error: null
+
+                forgotPasswordSuccess:
+                  summary: 忘記密碼驗證成功（scope=forgot_password）
+                  description: 返回 Reset Password Token，用於重設密碼
+                  value:
+                    success: true
+                    data:
+                      message: "Password reset verification successful"
+                      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      token_type: "Bearer"
+                      expires_in: 180
+                      scope: "reset_password"
+                    error: null
+
+                activateAccountSuccess:
+                  summary: 帳號啟用驗證成功（scope=activate_account）
+                  description: 啟用帳號並返回 Set Password Token，用於設定密碼
+                  value:
+                    success: true
+                    data:
+                      message: "Account activation successful"
+                      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      token_type: "Bearer"
+                      expires_in: 180
+                      scope: "set_password"
+                      next_step: "Use this token to set your password"
+                    error: null
+
+        '400':
+          description: 缺少 token 參數
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingToken:
+                  summary: 缺少 Magic Token
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "MISSING_TOKEN"
+                      message: "Magic link token is missing"
+
+                invalidScope:
+                  summary: Invalid token scope
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "INVALID_SCOPE"
+                      message: "Invalid token scope"
+
+        '401':
+          description: Magic Link 無效或已過期
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidMagicLink:
+                  summary: Magic Link 無效或已過期
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "INVALID_MAGIC_LINK"
+                      message: "Magic link is invalid or expired"
+
+        '500':
+          description: 伺服器錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                accountActivationFailed:
+                  summary: 帳號啟用失敗
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "ACCOUNT_ACTIVATION_FAILED"
+                      message: "Failed to activate account"
+
+                verificationFailed:
+                  summary: 驗證失敗
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "VERIFICATION_FAILED"
+                      message: "Failed to verify magic link"
+
+  /api/v1/auth/passwd/reset:
+    post:
+      tags:
+        - 用戶認證
+      summary: 重設密碼
+      description: |
+        使用 reset_password_token 重設用戶密碼
+
+        ## 核心職責
+        1. 驗證 reset_password_token（scope: reset_password）
+        2. 驗證密碼強度
+        3. 通過 LDAP 重設密碼
+        4. 撤銷 reset_password_token（防止重複使用）
+
+        ## 密碼強度要求
+        密碼必須符合以下四項規則中的至少三項：
+        1. 包含大小寫字母
+        2. 包含數字
+        3. 包含特殊字元
+        4. 長度至少 8 字元
+
+        同時不可使用常見弱密碼。
+
+        ## 安全機制
+        - JWT middleware 驗證 token（scope: reset_password）
+        - 密碼強度驗證
+        - Token 使用後立即撤銷
+        - 密碼在記憶體中清除
+
+      security:
+        - BearerAuth: []
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - new_password
+              properties:
+                new_password:
+                  type: string
+                  description: 新密碼（須符合密碼強度要求）
+                  example: "NewSecureP@ssw0rd"
+
+      responses:
+        '200':
+          description: 密碼重設成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                  - error
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: "密碼重設成功"
+                      user_id:
+                        type: string
+                        example: "E00001"
+                  error:
+                    type: object
+                    nullable: true
+                    example: null
+
+        '400':
+          description: 請求格式錯誤或密碼不符合要求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                weakPassword:
+                  summary: 密碼強度不足
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "WEAK_PASSWORD"
+                      message: "密碼強度不足。密碼必須符合以下四項規則中的至少三項：1) 包含大小寫字母 2) 包含數字 3) 包含特殊字元 4) 長度至少8字元。同時不可使用常見弱密碼。"
+
+        '401':
+          description: Token 無效或已過期
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidToken:
+                  summary: Token 無效
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "INVALID_TOKEN"
+                      message: "Invalid token: missing user ID"
+
+        '403':
+          description: Token scope 不匹配
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidScope:
+                  summary: Invalid token scope
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "INVALID_TOKEN_SCOPE"
+                      message: "Invalid token scope for password reset"
+
+        '500':
+          description: 伺服器錯誤
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                resetFailed:
+                  summary: 密碼重設失敗
+                  value:
+                    success: false
+                    data: null
+                    error:
+                      code: "PASSWORD_RESET_FAILED"
+                      message: "密碼重設失敗，請稍後再試"
 
   /PortalLdapLogin:
     post:
